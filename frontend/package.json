@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:apple": "tsc --noEmit && vite build --mode apple",
+    "build:zerozone": "tsc --noEmit && vite build --mode zerozone",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test:kf": "esbuild src/killfeed/diff.test.mts --bundle --platform=node --format=esm --outfile=node_modules/.cache/kf-test.mjs --log-level=warning && node node_modules/.cache/kf-test.mjs",

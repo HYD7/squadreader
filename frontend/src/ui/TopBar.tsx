@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import { useViewerStore } from "../state/viewerStore";
 import { ClipRecorder } from "./ClipRecorder";
 import { SettingsMenu } from "./SettingsMenu";
+import { IS_ZZ } from "../zz/build";
+import { backUrl, TR } from "../zz/mode";
 
 export function TopBar() {
   const status = useViewerStore((s) => s.status);
@@ -31,7 +33,10 @@ export function TopBar() {
     const d = new Date(ts);
     return isNaN(d.getTime())
       ? null
-      : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      : IS_ZZ
+        ? d.toLocaleDateString("tr-TR", { day: "numeric", month: "short",
+                                          timeZone: "Europe/Istanbul" })
+        : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   })();
 
   // How long since data last ARRIVED. Measured on our own clock (arrival time,
@@ -77,6 +82,11 @@ export function TopBar() {
   // /stats, /servers, the homepage — same or new tab) carry a same-origin
   // referrer, so return there; a direct/bookmarked replay has none → site home.
   const goBack = () => {
+    // Zero Zone: the replay lives at /tekrar/, the match page at /maclar/<id>.
+    if (IS_ZZ) {
+      window.location.href = backUrl(replayId);
+      return;
+    }
     const ref = document.referrer;
     try {
       const u = ref ? new URL(ref) : null;
@@ -93,14 +103,17 @@ export function TopBar() {
     <>
       <div id="hud">
         <div><b>{serverName}</b>
-          <span className="pill beta-pill"
-                title="System is in beta — feedback: reach out to your server admin">
-            BETA
-          </span>
+          {!IS_ZZ && (
+            <span className="pill beta-pill"
+                  title="System is in beta — feedback: reach out to your server admin">
+              BETA
+            </span>
+          )}
           <span className={"pill " + statusClass}>
-            {mode === "replay" ? "recording" : (STATUS_TR[status] ?? status)}
+            {IS_ZZ ? "tekrar"
+              : mode === "replay" ? "recording" : (STATUS_TR[status] ?? status)}
           </span></div>
-        <div>tick <b>{curSnap?.tick ?? "—"}</b>
+        <div>{IS_ZZ ? "kare" : "tick"} <b>{curSnap?.tick ?? "—"}</b>
           {" · "}<span>{rate}</span>
           {" · "}
           {/* Which match am I watching? The opaque match id used to be the only
@@ -123,19 +136,31 @@ export function TopBar() {
             home as a fallback). Shown only while watching a recording. */}
         {mode === "replay" && (
           <button className="tb-back" onClick={goBack}
-                  title="back to previous page / site">← Back</button>
+                  title={IS_ZZ ? TR.backTitle : "back to previous page / site"}>
+            {IS_ZZ ? TR.back : "← Back"}
+          </button>
         )}
-        <button onClick={openPicker} title="watch past matches">
-          Past Matches
+        {!IS_ZZ && (
+          <button onClick={openPicker} title="watch past matches">
+            Past Matches
+          </button>
+        )}
+        <span>{IS_ZZ ? "yakınlık" : "zoom"} <b>{view.zoom.toFixed(1)}x</b></span>
+        <button onClick={() => resetView()}
+                title={IS_ZZ ? "görünümü sıfırla (F)" : "reset view (F)"}>
+          {IS_ZZ ? "Sığdır" : "Fit"}
         </button>
-        <span>zoom <b>{view.zoom.toFixed(1)}x</b></span>
-        <button onClick={() => resetView()} title="reset view (F)">Fit</button>
         <button onClick={() => toggleScoreboard()}
-                title="scoreboard (Tab)">score</button>
+                title={IS_ZZ ? "skor tablosu (Tab)" : "scoreboard (Tab)"}>
+          {IS_ZZ ? "skor" : "score"}
+        </button>
         {mode === "replay" && (
           <button className={timelineVisible ? "on" : ""}
                   onClick={() => toggleTimeline()}
-                  title="ticket-loss timeline (G)">Tickets</button>
+                  title={IS_ZZ ? "bilet kaybı zaman çizelgesi (G)"
+                               : "ticket-loss timeline (G)"}>
+            {IS_ZZ ? "Biletler" : "Tickets"}
+          </button>
         )}
         <ClipRecorder />
         <SettingsMenu />

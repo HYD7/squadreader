@@ -1,0 +1,81 @@
+// Zero Zone mode helpers: mode detection, ?mode=replay&id= parsing, endpoint and
+// back URLs, error classification, source-link validation.
+import {
+  isZeroZoneMode, isValidMatchId, parseZzLocation, metaUrl, recordingUrl,
+  backUrl, classifyHttpStatus, errorText, normalizeSourceUrl, TR,
+} from "./mode.ts";
+
+let passed = 0, failed = 0;
+function ok(cond: unknown, msg: string) {
+  if (cond) { passed++; } else { failed++; console.error("  FAIL:", msg); }
+}
+function eq(a: unknown, b: unknown, msg: string) {
+  ok(JSON.stringify(a) === JSON.stringify(b),
+     `${msg} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`);
+}
+
+// --- mode detection
+ok(isZeroZoneMode("zerozone"), "zerozone mode detected");
+ok(!isZeroZoneMode("production"), "production is not zerozone");
+ok(!isZeroZoneMode("apple"), "apple is not zerozone");
+ok(!isZeroZoneMode(undefined) && !isZeroZoneMode(null) && !isZeroZoneMode(""),
+   "missing mode is not zerozone");
+
+// --- id validation
+for (const good of ["1", "42", "123456", "999999999999999"])
+  ok(isValidMatchId(good), `valid id ${good}`);
+for (const bad of ["", "0", "007", "-1", "1.5", "abc", "12a", " 12", "12 ",
+                   "1e3", "../x", "1/2", "1234567890123456", "١٢٣"])
+  ok(!isValidMatchId(bad), `invalid id ${JSON.stringify(bad)}`);
+ok(!isValidMatchId(null) && !isValidMatchId(undefined), "null/undefined id invalid");
+
+// --- location parsing
+eq(parseZzLocation("?mode=replay&id=42"), { ok: true, id: "42" }, "mode=replay&id");
+eq(parseZzLocation("?id=42"), { ok: true, id: "42" }, "id without mode");
+eq(parseZzLocation("?id=42&mode=replay&x=1"), { ok: true, id: "42" }, "extra params ignored");
+eq(parseZzLocation(""), { ok: false, reason: "no-id" }, "empty search");
+eq(parseZzLocation("?mode=replay"), { ok: false, reason: "no-id" }, "no id");
+eq(parseZzLocation("?mode=replay&id="), { ok: false, reason: "no-id" }, "empty id");
+eq(parseZzLocation("?mode=replay&id=abc"), { ok: false, reason: "bad-id" }, "non numeric id");
+eq(parseZzLocation("?mode=replay&id=0"), { ok: false, reason: "bad-id" }, "zero id");
+eq(parseZzLocation("?mode=replay&id=-5"), { ok: false, reason: "bad-id" }, "negative id");
+eq(parseZzLocation("?mode=replay&id=12%2F34"), { ok: false, reason: "bad-id" }, "encoded slash");
+eq(parseZzLocation("?mode=live&id=42"), { ok: false, reason: "bad-mode" }, "live mode refused");
+eq(parseZzLocation("?mode=home&id=42"), { ok: false, reason: "bad-mode" }, "home mode refused");
+
+// --- URLs
+eq(metaUrl("42"), "./api/recording/42/meta", "meta url");
+eq(recordingUrl("42"), "./api/recording/42", "recording url");
+ok(metaUrl("42").startsWith("./") && recordingUrl("42").startsWith("./"),
+   "endpoints are relative");
+eq(backUrl("42"), "/maclar/42", "back url");
+eq(backUrl(null), "/maclar", "back url without id");
+eq(backUrl("x/../y"), "/maclar", "back url refuses a bad id");
+
+// --- error classification and Turkish text
+eq(classifyHttpStatus(404), "not-found", "404 is not-found");
+for (const s of [400, 401, 403, 410, 500, 502, 503, 0])
+  eq(classifyHttpStatus(s), "failed", `status ${s} is failed`);
+eq(classifyHttpStatus(null), "failed", "network error is failed");
+eq(classifyHttpStatus(undefined), "failed", "undefined status is failed");
+eq(errorText("not-found").title, "Kayıt bulunamadı", "404 title");
+eq(errorText("failed").title, "Tekrar yüklenemedi", "generic title");
+eq(TR.loading, "Tekrar yükleniyor…", "loading text");
+eq(TR.source, "Kaynak kodu", "source label");
+
+// --- source link (VITE_ZZ_SOURCE_URL)
+eq(normalizeSourceUrl(undefined), null, "unset -> no link");
+eq(normalizeSourceUrl(""), null, "empty -> no link");
+eq(normalizeSourceUrl("   "), null, "blank -> no link");
+eq(normalizeSourceUrl("javascript:alert(1)"), null, "javascript: refused");
+eq(normalizeSourceUrl("data:text/html,x"), null, "data: refused");
+eq(normalizeSourceUrl("not a url"), null, "garbage refused");
+eq(normalizeSourceUrl("/relative"), null, "relative refused");
+eq(normalizeSourceUrl("https://example.org/repo"), "https://example.org/repo",
+   "https accepted");
+eq(normalizeSourceUrl(" https://example.org/repo "), "https://example.org/repo",
+   "trimmed");
+eq(normalizeSourceUrl(42), null, "non-string -> no link");
+
+console.log(`zz mode: ${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);

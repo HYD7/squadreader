@@ -21,6 +21,8 @@
 import { useEffect, useState } from "react";
 import { useViewerStore, RENDER_DELAY_MS } from "../state/viewerStore";
 import { replayLoad } from "../state/replayLoad";
+import { IS_ZZ } from "../zz/build";
+import { TR } from "../zz/mode";
 
 type Phase = "connecting" | "warmup" | "stalled"
            | "replayload" | "replayerror" | "live";
@@ -54,6 +56,12 @@ function computeState(): BufState {
     if (replayLoad.error) {
       return { phase: "replayerror", pct: 0, ...base };
     }
+    // Zero Zone: the loader effect has not started yet and nothing is parsed →
+    // still loading, so the card never flashes empty in between.
+    if (IS_ZZ && !s.replay.frames.length) {
+      return { phase: "replayload", pct: 0, staleSec: 0,
+               loaded: 0, total: 0, reconnecting };
+    }
     return { phase: "live", pct: 1, ...base };  // replay running → hidden
   }
 
@@ -77,7 +85,7 @@ function computeState(): BufState {
 }
 
 export function BufferOverlay() {
-  const [st, setSt] = useState<BufState>(
+  const [st, setSt] = useState<BufState>(() => IS_ZZ ? computeState() :
     { phase: "connecting", pct: 0, staleSec: 0, loaded: 0, total: 0,
       reconnecting: false });
 
@@ -120,6 +128,22 @@ export function BufferOverlay() {
   if (phase === "replayerror") {
     const openPicker = () =>
       (document.getElementById("recording-picker") as HTMLDialogElement | null)?.showModal();
+    if (IS_ZZ) {
+      return (
+        <div className="buf-overlay" role="status">
+          <div className="buf-card">
+            <div className="buf-title">{TR.failed}</div>
+            <div className="buf-sub">{TR.failedSub}</div>
+            <div className="buf-actions">
+              <button className="buf-ok"
+                      onClick={() => useViewerStore.getState().retryReplayLoad()}>
+                {TR.retry}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="buf-overlay" role="status">
         <div className="buf-card">
@@ -152,9 +176,9 @@ export function BufferOverlay() {
       <div className="buf-overlay" role="status">
         <div className="buf-card">
           <div className="buf-ring" />
-          <div className="buf-title">Loading recording</div>
+          <div className="buf-title">{IS_ZZ ? TR.loading : "Loading recording"}</div>
           <div className="buf-sub">
-            Downloading and preparing the match recording…
+            {IS_ZZ ? TR.loadingSub : "Downloading and preparing the match recording…"}
           </div>
           <div className="buf-bar">
             <div className={"buf-bar-fill" + (total > 0 ? "" : " buf-bar-indet")}
@@ -162,7 +186,7 @@ export function BufferOverlay() {
           </div>
           <div className="buf-meta">
             <span>{total > 0 ? `${Math.round(pct * 100)}%` : "…"}</span>
-            <span>{loaded}{total > 0 ? ` / ${total}` : ""} frames</span>
+            <span>{loaded}{total > 0 ? ` / ${total}` : ""} {IS_ZZ ? TR.frames : "frames"}</span>
           </div>
         </div>
       </div>

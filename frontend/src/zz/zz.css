@@ -1,0 +1,10 @@
+/* Zero Zone viewer additions (only imported by the Zero Zone entry). */
+.zz-source {
+  position: fixed; left: 8px; bottom: 4px; z-index: 5;
+  font-size: 11px; color: var(--ink-mute, #8b98ab);
+  opacity: 0.75; text-decoration: none;
+}
+.zz-source:hover { opacity: 1; text-decoration: underline; }
+.zz-screen {
+  position: fixed; inset: 0; display: grid; place-items: center;
+}
