@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import __version__, config, elo
+from . import __version__, config, discovery, elo
 
 # Plugins run inside the tick loop. At the production 0.5 Hz the whole tick has
 # ~2 s, and the reader — not the plugins — owns that. Anything past this gets
@@ -34,12 +34,53 @@ from . import __version__, config, elo
 _PLUGIN_BUDGET_MS = 250.0
 
 
-def _target_alive(pid: int) -> bool:
-    """True while the target process still exists. When Squad restarts
-    (map change / crash) the old pid dies and reads start failing; we
-    use this to exit cleanly so systemd re-runs `pidof` and re-attaches
-    to the new pid, instead of spinning forever on a dead pid."""
+#: The process the current pipeline is attached to, keyed by PID. Filled by
+#: `_open_pipeline` so the loops can check identity (pid + start time), not just
+#: "does /proc/<pid> exist", which a recycled PID would satisfy.
+_TARGETS: dict[int, discovery.GameProcess] = {}
+
+#: How often the run loops re-check that the target is still the same process.
+_IDENTITY_CHECK_SEC = 5.0
+
+
+def _target_alive(pid: int, target: discovery.GameProcess | None = None) -> bool:
+    """True while the target is STILL the process we attached to. When Squad
+    restarts (map change / crash) the old pid dies and reads start failing; the
+    loops use this to end the session and re-discover, instead of spinning
+    forever on a dead pid. With `target` the check is `(pid, start_time)`, so a
+    recycled PID does not pass for the old game. If identity cannot be read
+    (permissions) the answer is "alive": not knowing is not the same as gone."""
+    if target is not None:
+        try:
+            return discovery.is_same_process(target)
+        except OSError:
+            return True
     return os.path.exists(f"/proc/{pid}")
+
+
+def _reset_signal_handlers() -> None:
+    """A finished session leaves its SIGTERM/SIGINT handlers behind, and they
+    flip a flag nobody reads any more. Restore the defaults before waiting for
+    the next attach so a stop request is not silently swallowed."""
+    try:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    except (ValueError, OSError):
+        pass
+
+
+def _announce_lost(args: argparse.Namespace):
+    """`reattach_loop.on_lost` for serve/watch."""
+    def _on_lost(exc: discovery.TargetLost, n: int, delay: float) -> None:
+        print(f"[reattach] {exc}; hedef yeniden keşfedilecek "
+              f"({n}. kayıp, {delay:.0f} sn sonra)", file=sys.stderr)
+        if getattr(args, "pid", None):
+            print("[reattach] --pid sabitlemesi bırakıldı: PID geçicidir, "
+                  "yeni süreç yapılandırılmış ölçütlerle bulunacak",
+                  file=sys.stderr)
+            args.pid = None
+        _reset_signal_handlers()
+    return _on_lost
 
 
 def _discover_with_retry(fn, pm, label, *, attempts: int = 3,
@@ -154,7 +195,15 @@ def _open_pipeline(pid: int | None, *, with_metadata: bool):
     from .mem import ProcessMemory
     from .squad.metadata import Metadata
     from .squad.snapshot import resolve_paths
-    pid = pid or config.find_squad_server_pid()
+    # Resolved by discovery (or, for --pid, VERIFIED by it): the pid alone is
+    # never trusted, and more than one match is an error, not "the first".
+    proc = config.resolve_game_process(pid)
+    pid = proc.pid
+    _TARGETS.clear()
+    _TARGETS[pid] = proc
+    print(f"[+] hedef süreç: {proc.describe()}; eşleşen port anahtarı: "
+          f"{proc.matched_port_kind or 'yok (ölçüt verilmedi)'}",
+          file=sys.stderr)
     pm = ProcessMemory(pid)
     binary_id = addrcache.binary_identity(pid)
     arr = _resolve_gobjects(pm, binary_id)
@@ -172,7 +221,9 @@ _DEGRADED_MAX_SEC = 300.0
 
 
 def _open_pipeline_or_wait(args: argparse.Namespace, *, state_dir,
-                           channel: str, started: float):
+                           channel: str, started: float,
+                           on_wait: Callable[[str, str, int, float], None]
+                           | None = None):
     """Attach to the game, and if that is impossible, STAY ALIVE trying.
 
     The reader used to die here. `_open_pipeline` raises when Squad is not
@@ -192,21 +243,40 @@ def _open_pipeline_or_wait(args: argparse.Namespace, *, state_dir,
         ExecStartPre installs it. There is no match to interrupt, so unlike the
         running case this does not have to wait for anything.
 
-    Returns the open pipeline once it succeeds.
+    Returns the open pipeline once it succeeds. `on_wait(state, reason, attempt,
+    delay)` is told why it is waiting ("waiting_for_game", "container_mismatch"
+    or "attach_failed") so health output can say so. An AMBIGUOUS target or
+    unusable criteria are not waited out: they will not fix themselves.
     """
     from . import fleet, ingest_client, updater
     delay = _DEGRADED_MIN_SEC
     attempt = 0
     while True:
+        state = "attach_failed"
         try:
             return _open_pipeline(args.pid, with_metadata=not args.no_metadata)
+        except discovery.GameProcessNotFound as e:   # not running yet / gone
+            reason = str(e)
+            state = ("container_mismatch"
+                     if isinstance(e, discovery.ContainerMismatch)
+                     else "waiting_for_game")
+        except discovery.DiscoveryError:        # ambiguous / bad criteria
+            raise
         except SystemExit as e:                 # "no SquadGameServer running"
             reason = str(e) or "no Squad server process"
+            state = "waiting_for_game"
         except Exception as e:                  # unreadable memory, moved offsets
             reason = f"{type(e).__name__}: {e}"
+        reason = reason[:600]
         attempt += 1
         print(f"[degraded] cannot read the game ({reason}); attempt {attempt}, "
               f"retrying in {delay:.0f}s", file=sys.stderr)
+        if on_wait is not None:
+            try:
+                on_wait(state, reason, attempt, delay)
+            except Exception as _we:
+                print(f"[degraded] status endpoint failed: {_we!r}",
+                      file=sys.stderr)
 
         creds = ingest_client.current_creds()
         if creds and state_dir is not None:
@@ -335,13 +405,53 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_pipeline_waiting(args: argparse.Namespace):
+    """`_open_pipeline`, but a game that is not running (yet) is waited for with
+    a bounded back-off instead of being an error. Used when watch re-attaches
+    after losing its target."""
+    def _state(state: str, err: Exception, attempt: int, delay: float) -> None:
+        print(f"[reattach] oyun süreci bekleniyor ({state}): {err}; "
+              f"{attempt}. deneme, {delay:.0f} sn sonra tekrar", file=sys.stderr)
+
+    discovery.wait_for_game_process(
+        lambda: config.resolve_game_process(args.pid), on_state=_state)
+    return _open_pipeline(args.pid, with_metadata=not args.no_metadata)
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
+    """Continuous capture. If the game restarts, re-discover it (same criteria,
+    never the old PID) and keep capturing, until --duration is used up."""
+    t0 = time.time()
+    session = {"n": 0}
+
+    def _run() -> int:
+        session["n"] += 1
+        remaining = None
+        if args.duration:
+            remaining = args.duration - (time.time() - t0)
+            if remaining <= 0:
+                return 0
+        return _watch_once(args, wait_for_game=session["n"] > 1,
+                           duration=remaining)
+
+    return discovery.reattach_loop(_run, on_lost=_announce_lost(args),
+                                   sleep=lambda d: time.sleep(d))
+
+
+def _watch_once(args: argparse.Namespace, *, wait_for_game: bool,
+                duration: float | None) -> int:
     from .squad.snapshot import (
         DamageTracker, SnapshotCaches, build_snapshot, clean_nonfinite,
     )
     from .sqrx import SqrxWriter
-    pid, pm, arr, alloc, paths, meta = _open_pipeline(
-        args.pid, with_metadata=not args.no_metadata)
+    if wait_for_game:
+        pid, pm, arr, alloc, paths, meta = _open_pipeline_waiting(args)
+    else:
+        pid, pm, arr, alloc, paths, meta = _open_pipeline(
+            args.pid, with_metadata=not args.no_metadata)
+    target = _TARGETS.get(pid)
+    target_lost = False
+    last_identity_check = time.time()
     caches = SnapshotCaches()
     damage_tracker = DamageTracker()
 
@@ -355,6 +465,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
     base_out_path.parent.mkdir(parents=True, exist_ok=True)
 
     sqrx_path = Path(args.sqrx_out) if args.sqrx_out else None
+    if sqrx_path and wait_for_game:
+        # A re-attach must not truncate what the previous session captured.
+        sqrx_path = sqrx_path.with_name(
+            f"{sqrx_path.stem}_{int(time.time())}{sqrx_path.suffix}")
     if sqrx_path:
         sqrx_path.parent.mkdir(parents=True, exist_ok=True)
     sqrx_writer = SqrxWriter(sqrx_path, args.server_id) if sqrx_path else None
@@ -420,10 +534,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 if sqrx_writer is not None:
                     sqrx_raw_bytes += sqrx_writer.write_line(line)
             except OSError as e:
-                if not _target_alive(pid):
+                if not _target_alive(pid, target):
                     print(f"[tick {tick}] target pid {pid} is gone "
                           "(Squad restarted?); stopping capture",
                           file=sys.stderr)
+                    target_lost = True
                     break
                 print(f"[tick {tick}] read error: {e!r}; retrying",
                       file=sys.stderr)
@@ -462,10 +577,20 @@ def cmd_watch(args: argparse.Namespace) -> int:
                           f"attacker={ev.get('attacker')!r}",
                           file=sys.stderr)
 
+            # A recycled PID reads garbage without ever raising OSError, so
+            # identity is checked on a timer too, not only after a failure.
+            if target is not None and now - last_identity_check >= _IDENTITY_CHECK_SEC:
+                last_identity_check = now
+                if not _target_alive(pid, target):
+                    print(f"[tick {tick}] target pid {pid} was replaced or is "
+                          "gone; stopping capture", file=sys.stderr)
+                    target_lost = True
+                    break
+
             sleep_for = period - (time.time() - t_tick)
             if sleep_for > 0:
                 time.sleep(sleep_for)
-            if args.duration and now - started >= args.duration:
+            if duration and now - started >= duration:
                 break
     finally:
         f.close()
@@ -489,6 +614,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         print(f"sqrx:   {sqrx_path} ({on_disk/1024:.1f} KiB, "
               f"{sqrx_raw_bytes/1024:.1f} KiB raw, "
               f"{ratio:.1f}x compression)", file=sys.stderr)
+    if target_lost:
+        raise discovery.TargetLost(
+            f"oyun süreci (PID {pid}) kayboldu ya da değişti")
     return 0
 
 
@@ -520,12 +648,97 @@ def _save_placer_cache(caches, path: Path) -> None:
         pass
 
 
+class _WaitingEndpoint:
+    """A minimal status endpoint that is up ONLY while the reader has no game
+    process to read (before the first attach, and after the game is lost).
+
+    Without it a reader waiting for its game is silent: nothing answers on the
+    port, so a monitor cannot tell "the game is down" from "the reader is dead".
+    It serves what needs no game: /health (STALE, 503, because no tick is being
+    produced), /health/deep with the reason, the recordings that already exist,
+    and the Export API with ``readerState = "unknown"``. It is closed before
+    the real server binds the same port.
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self._args = args
+        self._srv: Any = None
+        self._failed = False
+        self.status: dict[str, Any] = {"readerState": "waiting_for_game"}
+
+    def update(self, state: str, reason: str, attempt: int = 0,
+               delay: float = 0.0) -> None:
+        self.status = {"readerState": state, "reason": reason,
+                       "attempt": attempt, "retryInSec": round(delay)}
+        if self._srv is None and not self._failed:
+            self._start()
+
+    def _start(self) -> None:
+        args = self._args
+        try:
+            from .export_api import configure_export
+            from .httpsrv import _TickBeat, serve_in_background
+            stats_db = (Path(args.stats_db).expanduser()
+                        if getattr(args, "stats_db", None) else None)
+            rec = (Path(args.recordings_dir).expanduser()
+                   if getattr(args, "recordings_dir", None) else None)
+            api = configure_export(
+                getattr(args, "export_token_file", None)
+                or config.get("export_token_file"),
+                server_id=args.server_id, stats_db=stats_db, recordings_dir=rec,
+                squad_port=config.get("squad_port"),
+                container_id=os.environ.get("SQREADER_CONTAINER_ID") or None,
+                reader_state=lambda: "unknown")
+            self._srv = serve_in_background(
+                args.host, args.port, _TickBeat(), recordings_dir=rec,
+                health_provider=lambda: dict(self.status),
+                stale_after_sec=0.0, cors_origin=args.cors_origin,
+                stats_db=stats_db, export_api=api)
+            print(f"[degraded] durum ucu açık: http://{args.host}:{args.port} "
+                  f"(/health, /health/deep"
+                  f"{', /export/v1' if api is not None else ''}); "
+                  f"oyun beklenirken yalnız bunlar servis edilir",
+                  file=sys.stderr)
+        except Exception as e:                      # e.g. the port is taken
+            self._failed = True
+            print(f"[degraded] durum ucu açılamadı: {e!r}", file=sys.stderr)
+
+    def close(self) -> None:
+        srv, self._srv = self._srv, None
+        if srv is not None:
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
+    """`serve` with re-discovery. One reader = one game server = one data dir.
+
+    Refuses to start on a data directory that belongs to another server_id.
+    Then runs sessions: each one (re-)discovers the game by the configured
+    criteria and reads until stopped, or until its process is gone/replaced,
+    at which point a fresh session discovers again (never the old PID). While
+    no game process exists the reader waits with a bounded back-off and reports
+    that state instead of crashing.
+    """
+    stats_db = getattr(args, "stats_db", None)
+    if stats_db:
+        discovery.check_stats_db_server_id(Path(stats_db).expanduser(),
+                                           args.server_id)
+    return discovery.reattach_loop(lambda: _serve_once(args),
+                                   on_lost=_announce_lost(args),
+                                   sleep=lambda d: time.sleep(d))
+
+
+def _serve_once(args: argparse.Namespace) -> int:
     """
     Run the snapshot producer in a loop, recording finished matches and
     (optionally) computing stats + pushing them to central. This is the
     distributed build: it serves finished replays + stats over HTTP but never
     a live view. Optional --out / --sqrx-out tee each tick to disk in parallel.
+    Raises `discovery.TargetLost` when the game process is gone or replaced.
     """
     import logging
 
@@ -551,10 +764,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     _early_state_dir = (Path(args.stats_db).expanduser().parent
                         if getattr(args, "stats_db", None) else None)
     _serve_started = time.time()
-    pid, pm, arr, alloc, paths, meta = _open_pipeline_or_wait(
-        args, state_dir=_early_state_dir,
-        channel=str(config.get("update_channel") or "stable"),
-        started=_serve_started)
+    waiting = _WaitingEndpoint(args)
+    try:
+        pid, pm, arr, alloc, paths, meta = _open_pipeline_or_wait(
+            args, state_dir=_early_state_dir,
+            channel=str(config.get("update_channel") or "stable"),
+            started=_serve_started, on_wait=waiting.update)
+    finally:
+        waiting.close()
+    target = _TARGETS.get(pid)
     caches = SnapshotCaches()
     damage_tracker = DamageTracker()
 
@@ -565,10 +783,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # thread — if the log is missing/unreadable or the thread dies, the
     # reader keeps running and the feed just falls back to the memory events.
     log_tailer = None
+    # The log is resolved from the DISCOVERED process (/proc/<pid>/root/...), so
+    # it is the right game's log by construction. Ambiguity is an error, not a
+    # guess, and is raised here rather than swallowed by the tailer's guard.
+    squad_log: str | None = None
+    if target is not None:
+        _log_res = discovery.resolve_log_path(
+            target, explicit=(getattr(args, "squad_log", None)
+                              or config.get("log_path")),
+            log_path_in_container=config.get("log_path_in_container"),
+            glob_pattern=config.get("squad_log_glob"))
+        squad_log = _log_res.path
+        if not squad_log:
+            print("  bakılan log yolları: " + ", ".join(_log_res.tried),
+                  file=sys.stderr)
+    else:
+        squad_log = getattr(args, "squad_log", None) or config.get("log_path")
     try:
-        from .squad.logtail import LogTailer, find_squad_log
-        squad_log = (getattr(args, "squad_log", None)
-                     or find_squad_log(pid))
+        from .squad.logtail import LogTailer
         if squad_log:
             log_tailer = LogTailer(squad_log)
             log_tailer.start()
@@ -578,10 +810,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
             # the kill feed falls back to memory sampling, which catches only
             # a fraction of kills, and the stats look plausible while being
             # wrong.
-            print("  WARNING: no Squad log found — the kill feed will be "
-                  "INCOMPLETE. Set `squad_log_glob` in sqreader.config.json "
-                  "to <server root>/SquadGame/Saved/Logs/SquadGame.log",
-                  file=sys.stderr)
+            print("  UYARI: Squad logu bulunamadı: kill feed EKSİK olacak. "
+                  "Konteynerde log yolu farklıysa config'te "
+                  "`log_path_in_container` (ya da `log_path`) ayarlayın; "
+                  "reader'ın /proc/<pid>/root altını okuyabilmesi için "
+                  "root yetkisi gerekir.", file=sys.stderr)
     except Exception as e:
         print(f"  log tailer disabled: {e}", file=sys.stderr)
         log_tailer = None
@@ -608,6 +841,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     def _deep_health() -> dict:
         return {
             "pid": pid,
+            "readerState": _export_reader_state(),
+            "target": ({
+                "startTimeTicks": target.start_time_ticks,
+                "matchedPortKind": target.matched_port_kind,
+                "gamePort": target.game_port,
+                "queryPort": target.query_port,
+                "containerId": target.container_id,
+                "serverUuid": target.server_uuid,
+                "logPath": squad_log,
+            } if target is not None else None),
             "addresses": {
                 "gobjects": hex(arr.base),
                 "fnamepool": hex(alloc.base),
@@ -945,8 +1188,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     export_api = configure_export(
         getattr(args, "export_token_file", None) or config.get("export_token_file"),
         server_id=args.server_id, stats_db=stats_db_path,
-        recordings_dir=recordings_dir, squad_port=config.get("squad_port"),
-        container_id=os.environ.get("SQREADER_CONTAINER_ID") or None,
+        recordings_dir=recordings_dir,
+        squad_port=(target.game_port if target is not None
+                    and target.game_port is not None
+                    else config.get("squad_port")),
+        container_id=((target.container_id if target is not None else None)
+                      or os.environ.get("SQREADER_CONTAINER_ID") or None),
         reader_state=_export_reader_state)
     srv = serve_in_background(args.host, args.port, beat,
                               recordings_dir=recordings_dir,
@@ -1011,7 +1258,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         if args.no_metadata:
             wargv.append("--no-metadata")
         worker = ProcessBuildWorker(
-            wargv, target_alive=lambda: _target_alive(pid))
+            wargv, target_alive=lambda: _target_alive(pid, target))
         try:
             worker.start()
         except Exception as exc:                          # noqa: BLE001
@@ -1043,6 +1290,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     started = time.time()
     last_report = started
     last_flush = started
+    last_identity_check = started
     _flush_push()  # drain anything a previous run queued before we start ticking
     # First fleet check-in ~60s after boot (like the reference updater), then
     # every CHECKIN_INTERVAL_SEC. Seeding last_checkin in the past makes the first
@@ -1158,9 +1406,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
                     # ready, otherwise write a cheap 4 Hz position frame. --
                     if worker is not None and worker.target_gone:
                         print(f"[tick {tick}] target pid {pid} is gone "
-                              "(build worker); exiting for systemd restart",
-                              file=sys.stderr)
-                        sys.exit(1)
+                              "(build worker); re-discovering", file=sys.stderr)
+                        raise discovery.TargetLost(
+                            f"oyun süreci (PID {pid}) kayboldu (build worker)")
                     frame = worker.latest() if worker is not None else None
                     if frame is not None and frame.gen != last_full_gen:
                         last_full_gen = frame.gen
@@ -1230,12 +1478,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
                     else:
                         bad_streak = 0
                     _consume_full(snap)
+            except discovery.TargetLost:
+                raise
             except OSError as e:
-                if not _target_alive(pid):
+                if not _target_alive(pid, target):
                     print(f"[tick {tick}] target pid {pid} is gone "
-                          "(Squad restarted?); exiting for systemd restart "
-                          "(will re-resolve pid)", file=sys.stderr)
-                    sys.exit(1)
+                          "(Squad restarted?); re-discovering", file=sys.stderr)
+                    raise discovery.TargetLost(
+                        f"oyun süreci (PID {pid}) kayboldu ya da değişti"
+                    ) from e
                 print(f"[tick {tick}] read error: {e!r}", file=sys.stderr)
                 time.sleep(period)
                 continue
@@ -1247,6 +1498,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 continue
 
             now = time.time()
+            # A recycled PID keeps answering reads with someone else's memory
+            # and never raises, so identity (pid + start time) is re-checked on
+            # a timer, not only after a failed read.
+            if target is not None and now - last_identity_check >= _IDENTITY_CHECK_SEC:
+                last_identity_check = now
+                if not _target_alive(pid, target):
+                    print(f"[tick {tick}] target pid {pid} was replaced or is "
+                          "gone; re-discovering", file=sys.stderr)
+                    raise discovery.TargetLost(
+                        f"oyun süreci (PID {pid}) kayboldu ya da değişti")
             if now - last_report >= 5.0:
                 avg = stats_state["avgBuildMs"]
                 print(f"[tick {tick}] "
@@ -1346,6 +1607,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         if placer_cache_path is not None:
             _save_placer_cache(caches, placer_cache_path)  # keep placers
         srv.shutdown()
+        srv.server_close()      # release the port: a re-attach binds it again
         if out_f:
             out_f.close()
         if sqrx_writer:
@@ -1409,6 +1671,7 @@ def cmd_stats_backfill(args: argparse.Namespace) -> int:
         if push_backlog is not None:
             ingest_client.enqueue(push_backlog, match_id)
 
+    discovery.check_stats_db_server_id(stats_db, args.server_id)
     store = StatsStore(stats_db, server_id=args.server_id,
                        on_finalize=_enqueue if push_backlog is not None else None)
     print(f"backfilling {len(eligible)} matches from {rec_dir} "
@@ -1573,7 +1836,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from .ue.value import read_fvector
     import struct as _s
 
-    pid = args.pid or config.find_squad_server_pid()
+    # Process discovery FIRST, and printed even when it fails: "which process,
+    # which port key matched, which container, which log, what could not be
+    # read" is the first thing to know when nothing else works. Where there is
+    # no /proc (Windows) it says NOT RUN; it never looks like a pass.
+    print("== süreç keşfi ==")
+    _disc_status, _disc_lines = discovery.discovery_report(
+        pid=args.pid, explicit_log=config.get("log_path"),
+        glob_pattern=config.get("squad_log_glob"),
+        **config.discovery_criteria())
+    _disc_tag = {"ok": "OK  ", "fail": "FAIL",
+                 "skipped": "SKIP"}[_disc_status]
+    for _i, _line in enumerate(_disc_lines):
+        print(f"  {_disc_tag if _i == 0 else '    '} {_line}")
+    print()
+
+    proc = config.resolve_game_process(args.pid)
+    pid = proc.pid
     pm = ProcessMemory(pid)
     # Resolve via the SAME cache+discovery path the pipeline uses, so
     # doctor operates on the LIVE addresses. (The old version hardcoded
@@ -2509,6 +2788,13 @@ def cmd_apply_staged_update(args: argparse.Namespace) -> int:
     return 0
 
 
+_PID_HELP = ("DO NOT pin a PID in a unit file or script: PIDs are transient "
+             "and are reused. Prefer squad_port / squad_query_port / "
+             "expected_container_id in the config. If given, the process is "
+             "still VERIFIED (game binary + the configured ports/container) "
+             "and refused otherwise.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="sqreader",
                                  description=__doc__,
@@ -2516,7 +2802,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
 
     p_snap = sub.add_parser("snapshot", help="emit one NDJSON snapshot")
-    p_snap.add_argument("--pid", type=int)
+    p_snap.add_argument("--pid", type=int, help=_PID_HELP)
     p_snap.add_argument("--server-id", default=config.get("server_id"))
     p_snap.add_argument("--pretty", action="store_true")
     p_snap.add_argument("--out", type=Path,
@@ -2527,12 +2813,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sum = sub.add_parser("summary",
                            help="human-readable dashboard of one snapshot")
-    p_sum.add_argument("--pid", type=int)
+    p_sum.add_argument("--pid", type=int, help=_PID_HELP)
     p_sum.set_defaults(func=cmd_summary)
 
     p_watch = sub.add_parser("watch",
                              help="continuous NDJSON capture to a file")
-    p_watch.add_argument("--pid", type=int)
+    p_watch.add_argument("--pid", type=int, help=_PID_HELP)
     p_watch.add_argument("--server-id", default=config.get("server_id"))
     p_watch.add_argument("--hz", type=float, default=2.0)
     p_watch.add_argument("--duration", type=float,
@@ -2554,7 +2840,7 @@ def build_parser() -> argparse.ArgumentParser:
                                   "compute stats, optionally push to central, "
                                   "and serve finished replays + stats over HTTP "
                                   "(no live view)")
-    p_serve.add_argument("--pid", type=int)
+    p_serve.add_argument("--pid", type=int, help=_PID_HELP)
     p_serve.add_argument("--server-id", default=config.get("server_id"))
     p_serve.add_argument("--host", default="127.0.0.1",
                          help="bind address (default 127.0.0.1; use 0.0.0.0 "
@@ -2662,7 +2948,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc = sub.add_parser("doctor",
                            help="verify every hardcoded offset still matches "
                                 "the live binary (run after Squad updates)")
-    p_doc.add_argument("--pid", type=int)
+    p_doc.add_argument("--pid", type=int, help=_PID_HELP)
     p_doc.set_defaults(func=cmd_doctor)
 
     p_prof = sub.add_parser(
@@ -2756,7 +3042,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except discovery.DiscoveryError as e:
+        # A refusal with a reason (ambiguous target, data dir of another
+        # server, no /proc), not a traceback.
+        print(f"HATA: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

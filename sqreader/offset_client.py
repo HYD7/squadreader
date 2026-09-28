@@ -54,7 +54,13 @@ def fetch_and_accept(creds: dict[str, str], squad_build: str, channel: str,
                      min_version: int, *, seq: int,
                      timeout: float = 15.0) -> dict[str, Any] | None:
     """Fetch central's current pack for our build+channel and verify it in one
-    call. None if nothing acceptable is offered or central is unreachable."""
+    call. None if nothing acceptable is offered or central is unreachable.
+
+    Under the ``local-only`` network policy no remote correction is ever
+    sought: None, so a drifted offset keeps its "incompatible build -> stop,
+    visible error" behaviour instead of producing wrong stats."""
+    if not ingest_client.central_allowed(creds, purpose="offset-autoheal"):
+        return None
     try:
         pack = ingest_client.fetch_offsets(creds, squad_build, channel,
                                            seq=seq, timeout=timeout)

@@ -34,6 +34,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
+from .. import netpolicy
+
 log = logging.getLogger(__name__)
 
 #: How many alerts may wait for delivery. Small on purpose: if the worker is
@@ -83,6 +85,11 @@ def replay_url(base: Optional[str], match_id: Optional[str]) -> Optional[str]:
     the viewer ignores would look like it worked and quietly not.
     """
     if not base or not match_id:
+        return None
+    # Under the local-only network policy a link to a host outside the allowed
+    # set (squadreader.com by default) is not generated: an alert must not
+    # point admins at an external service the deployment has switched off.
+    if not netpolicy.is_allowed(base):
         return None
     return f"{base.rstrip('/')}/replay/?mode=replay&id={match_id}"
 
@@ -320,6 +327,13 @@ class DiscordNotifier:
         return batch
 
     def _post(self, batch: list[dict]) -> None:
+        # Checked once per batch, before anything is built or resolved. A
+        # blocked webhook drops the announcement (the alert is already stored)
+        # and does not retry: there is nothing transient about a policy.
+        try:
+            netpolicy.check_outbound(self._url, purpose="alert-webhook")
+        except netpolicy.OutboundBlocked:
+            return
         embeds = [build_embed(a, replay_base=self._replay_base,
                               server_label=self._server_label)
                   for a in batch]
@@ -334,7 +348,8 @@ class DiscordNotifier:
                     self._url, data=payload, method="POST",
                     headers={"Content-Type": "application/json",
                              "User-Agent": "sqreader"})
-                with urllib.request.urlopen(req, timeout=self._timeout):
+                with netpolicy.guarded_urlopen(req, timeout=self._timeout,
+                                               purpose="alert-webhook"):
                     return
             except urllib.error.HTTPError as e:
                 if e.code == 429:

@@ -14,25 +14,43 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import subprocess  # noqa: F401  (legacy attribute; tests patch config.subprocess)
 from pathlib import Path
 from typing import Any
+
+from . import discovery
 
 DEFAULTS: dict[str, Any] = {
     # The Squad dedicated-server binary name. This is a Squad constant (the same
     # on every install), exposed only so an exotic rename can be handled without
     # editing source.
     "squad_process_name": "SquadGameServer",
-    # pgrep -f regex, used ONLY to pick the right instance on a multi-instance
-    # box. ``.*`` matches any user / any path by default, so single-instance
-    # boxes never need to touch this.
+    # DEPRECATED, unused since process discovery moved to sqreader/discovery.py
+    # (kept so existing config files still load).
     "squad_binary_pattern": r"/home/.*/serverfiles/.*SquadGameServer",
     # The game port of the instance THIS agent reads (Squad's ``-Port=``), for
     # boxes running several servers. Unset means "the only one there is", which
     # is resolved by name and is a coin toss the moment there are two. Set it
     # and the choice stops depending on which server happened to start first.
     "squad_port": None,
-    # Squad server log the kill-feed tailer reads (glob; ``*`` = any user).
+    # Squad's ``-QueryPort=`` of the instance THIS reader reads. Optional second
+    # criterion (or the only one, if that is the number you know). The reader
+    # reports which of Port / QueryPort matched. See sqreader/discovery.py.
+    "squad_query_port": None,
+    # Container id (64 hex, or a prefix of at least 12) the game must run in.
+    # Optional extra safety when several servers share a host. A re-created
+    # container gets a NEW id: after re-creating it, update this value; until
+    # then the reader refuses (visibly) to attach to the new process.
+    "expected_container_id": None,
+    # Where the log lives INSIDE the container; the reader reads it through
+    # /proc/<pid>/root. None = /home/container/SquadGame/Saved/Logs/SquadGame.log
+    "log_path_in_container": None,
+    # Explicit log file path on the reader's own filesystem. Wins over
+    # everything; None = derive it from the discovered process.
+    "log_path": None,
+    # Fallback for non-Pterodactyl installs ONLY (used when the process is not
+    # known to be in a container and its own log cannot be found). More than one
+    # match is an error, never "the newest".
     "squad_log_glob": "/home/*/serverfiles/SquadGame/Saved/Logs/SquadGame.log",
     # Default value of the snapshot ``server`` field and the stats-DB partition
     # key. Override per deployment (e.g. "eu-1") when you run more than one.
@@ -138,28 +156,23 @@ def get(key: str) -> Any:
 
 
 def _has_game_port(args: list[str], port: int) -> bool:
-    """Whether a command line names ``port`` as Squad's GAME port.
+    """Whether a command line names ``port`` as Squad's GAME port (``Port=``).
 
-    ``-QueryPort=`` and ``-BeaconPort=`` carry port numbers too, so the argument
-    is matched whole rather than searched for: on a box where one server's game
-    port is another's query port, a substring test picks the wrong game.
+    Legacy helper; the real matching is ``discovery.parse_ports``. ``QueryPort=``
+    and ``BeaconPort=`` carry port numbers too, and the number must match whole:
+    on a box where one server's game port is another's query port, a substring
+    test picks the wrong game.
     """
-    want = f"port={port}"
-    return any(a.lstrip("-/").lower() == want for a in args)
+    return port in discovery.parse_ports(args)[discovery.KIND_GAME]
 
 
 def _is_game_binary(pid: str, proc: str) -> bool:
     """Whether ``pid`` IS the game server rather than something that starts it.
 
-    Not a `comm` check: the kernel truncates comm to 15 bytes, so LinuxGSM's
-    ``SquadGameServer.sh`` launcher reports exactly ``SquadGameServer`` — the
-    same as the binary — and carries the same ``-Port=`` on its command line.
-    Attaching to that shell finds no game module mapped and the reader dies on
-    startup, over and over, because the unit restarts it.
-
-    The exe link is what separates them: the launcher's resolves to a shell.
-    Unreadable means no, since a reader that cannot identify its target has no
-    business attaching to it.
+    Legacy helper, kept for callers that only have a PID. Not a `comm` check:
+    the kernel truncates comm to 15 bytes, so LinuxGSM's ``SquadGameServer.sh``
+    launcher reports exactly ``SquadGameServer``, the same as the binary. The exe
+    link is what separates them. Unreadable means no.
     """
     try:
         return os.path.basename(os.readlink(f"/proc/{pid}/exe")) == proc
@@ -167,84 +180,76 @@ def _is_game_binary(pid: str, proc: str) -> bool:
         return False
 
 
+def discovery_criteria(**overrides: Any) -> dict[str, Any]:
+    """The discovery criteria the config asks for (overrides win)."""
+    crit: dict[str, Any] = {
+        "exe_names": _exe_names(),
+        "game_port": get("squad_port"),
+        "query_port": get("squad_query_port"),
+        "expected_container_id": get("expected_container_id"),
+        "log_path_in_container": get("log_path_in_container"),
+    }
+    crit.update(overrides)
+    return crit
+
+
+def _exe_names() -> tuple[str, ...]:
+    name = get("squad_process_name")
+    if not name:
+        return tuple(discovery.DEFAULT_EXE_NAMES)
+    return (str(name),) + tuple(n for n in discovery.DEFAULT_EXE_NAMES
+                                if n != name)
+
+
+def resolve_game_process(pid: int | None = None) -> discovery.GameProcess:
+    """The ONE game process this reader targets, or a ``DiscoveryError``.
+
+    With ``pid`` (``--pid``): that process is VERIFIED against the same criteria
+    (binary name, ports, container) instead of being trusted. Do not pin a PID
+    in a unit or config: PIDs are transient. Without it: discovery by the
+    configured criteria; zero matches and several matches are both errors.
+    """
+    crit = discovery_criteria()
+    if pid:
+        return discovery.verify_game_process(int(pid), **crit)
+    return discovery.discover_game_process(**crit)
+
+
 def _pid_by_game_port(proc: str, port: int) -> int | None:
-    """PID of the ``proc`` instance started with Squad's ``-Port=<port>``."""
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/cmdline") as f:
-                args = f.read().split("\0")
-        except OSError:
-            continue
-        if _has_game_port(args, port) and _is_game_binary(entry, proc):
-            return int(entry)
-    return None
+    """PID of the single ``proc`` instance with ``Port=<port>``, else None."""
+    try:
+        return discovery.discover_game_process(
+            **discovery_criteria(exe_names=(proc,), game_port=port)).pid
+    except discovery.GameProcessNotFound:
+        return None
 
 
 def find_squad_server_pid() -> int:
-    """Resolve the Squad dedicated-server PID.
+    """Resolve the Squad dedicated-server PID (legacy int-returning API).
 
-    ``squad_port`` decides it outright when set — the only answer that does not
-    depend on start order, and the only one worth trusting on a box running more
-    than one server. Missing is an error rather than a fallback: reading a
-    server the operator did not ask for is worse than reading none, because
-    every match it publishes lands under the wrong server's name.
+    Prefer ``resolve_game_process``: it returns the identity too
+    (``pid`` + ``start_time_ticks``), which is what protects against PID reuse.
 
-    Without it:
-
-    1. ``pidof -s <process>`` — the reliable path (same as the systemd unit's
-       ``--pid $(pidof ...)``).
-    2. pgrep the configured install pattern, preferring the instance carrying a
-       ``Port=`` argument (multi-instance boxes).
-    3. Generic ``/proc`` scan matching ``comm`` EXACTLY == ``<process>`` — skips
-       the tmux / launch-shell wrappers that carry the name in their cmdline but
-       map no SquadGameServer module.
-
-    Note that 1 answers first and answers arbitrarily when several are running,
-    so 2's multi-instance filter is only ever reached once `pidof` has failed.
-    That is why ``squad_port`` exists rather than a smarter pattern.
+    ``squad_port`` decides it outright when set. Missing is an error rather than
+    a fallback: reading a server the operator did not ask for is worse than
+    reading none, because every match it publishes lands under the wrong
+    server's name. Without a port criterion, more than one running server is an
+    ERROR too; the first one is never picked.
     """
     proc = get("squad_process_name")
-    pattern = get("squad_binary_pattern")
     port = get("squad_port")
-    if port:
-        pid = _pid_by_game_port(proc, int(port))
-        if pid is not None:
-            return pid
-        raise SystemExit(f"no {proc} running with -Port={port} "
-                         f"(squad_port is set, so no other instance will do)")
-    # 1. pidof — same resolver the service uses.
     try:
-        out = subprocess.check_output(["pidof", "-s", proc], text=True).strip()
-        if out:
-            return int(out.split()[0])
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        pass
-    # 2. configured install pattern (Port= filter for multi-instance).
-    try:
-        pids = subprocess.check_output(
-            ["pgrep", "-f", pattern], text=True).strip().splitlines()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pids = []
-    for s in pids:
-        try:
-            if "Port=" in open(f"/proc/{s}/cmdline").read():
-                return int(s)
-        except (FileNotFoundError, ValueError):
-            pass
-    # 3. Generic /proc scan — comm EXACT match (skips tmux/sh wrappers).
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/comm") as f:
-                comm = f.read().strip()
-        except OSError:
-            continue
-        if comm == proc:
-            return int(entry)
-    raise SystemExit(f"no {proc} process running")
+        if (port and get("squad_query_port") is None
+                and get("expected_container_id") is None):
+            pid = _pid_by_game_port(proc, int(port))
+            if pid is not None:
+                return pid
+            raise SystemExit(f"no {proc} running with -Port={port} "
+                             f"(squad_port is set, so no other instance will do)")
+        return resolve_game_process().pid
+    except discovery.DiscoveryError as e:
+        raise SystemExit(str(e)) from e
 
 
-__all__ = ["DEFAULTS", "get", "find_squad_server_pid"]
+__all__ = ["DEFAULTS", "get", "find_squad_server_pid",
+           "resolve_game_process", "discovery_criteria"]

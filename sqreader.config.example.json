@@ -13,6 +13,34 @@
   "squad_log_glob": "/home/*/serverfiles/SquadGame/Saved/Logs/SquadGame.log",
   "server_id": "squad",
 
+  "_discovery_comment": [
+    "Which game server does THIS reader read? One reader = one game server =",
+    "one data directory. Two servers on one host need two configs, two",
+    "server_id values and two data directories; the reader refuses to start on",
+    "a data directory whose stats DB already holds another server_id.",
+    "NEVER pin a PID (no --pid $(pidof ...), no PID in a unit or config): PIDs",
+    "are transient. The reader finds the game by criteria and re-discovers it",
+    "after every restart. `--pid` still works but is verified (game binary +",
+    "these criteria) and refused otherwise.",
+    "squad_port / squad_query_port: the game's -Port= / -QueryPort= (also found",
+    "inside UE '?Port=' URL arguments; whole-number match). Use whichever you",
+    "know; the reader reports which key matched. With neither, more than one",
+    "game process on the host is an ERROR (nothing is chosen for you).",
+    "expected_container_id: 64-hex Docker container id or a prefix of at least",
+    "12 characters. Optional extra check. Re-creating the container changes the",
+    "id: update this value then, or the reader refuses the new process (and says",
+    "so in its log and /health/deep).",
+    "log_path_in_container: where the game writes its log INSIDE the container;",
+    "read through /proc/<pid>/root (needs root or equivalent). Default:",
+    "/home/container/SquadGame/Saved/Logs/SquadGame.log. log_path is an explicit",
+    "path on the reader's own filesystem and wins over everything."
+  ],
+  "squad_port": null,
+  "squad_query_port": null,
+  "expected_container_id": null,
+  "log_path_in_container": null,
+  "log_path": null,
+
   "_plugins_comment": [
     "Plugins are off unless a config path is given. --plugins-config wins;",
     "this key is the fallback for deployments whose start command is not",
@@ -36,15 +64,13 @@
   "alert_min_confidence": 0.0,
 
   "_multi_instance_comment": [
-    "Running SEVERAL Squad servers on one box? Set squad_port to the -Port= of",
-    "the one THIS agent reads, and give each agent its own server_id. Without",
-    "it the server is found by process name, which answers with an arbitrary",
-    "one of them — so every agent may end up reading the same game, and which",
-    "game that is can change on any restart. Each instance also needs its own",
-    "install dir, HTTP port and systemd unit: see the installer's",
+    "Running SEVERAL Squad servers on one box? Set squad_port (or",
+    "squad_query_port) to the one THIS agent reads and give each agent its own",
+    "server_id and data directory. Without a port criterion the reader refuses",
+    "to start while more than one game process exists. Each instance also needs",
+    "its own install dir, HTTP port and systemd unit: see the installer's",
     "SQREADER_INSTANCE."
   ],
-  "squad_port": null,
 
   "_push_comment": [
     "Optional central push (OFF by default). Report FINISHED matches (stats +",

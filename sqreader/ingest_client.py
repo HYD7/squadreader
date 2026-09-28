@@ -1,6 +1,6 @@
 """Outbound push client: send finished-match stats + .sqrx replays to a central.
 
-This is the ONLY part of sqreader that talks to the network, and only when the
+This is the ONLY part of sqreader that talks to a central, and only when the
 box is enrolled (``.env.agent`` present) and push is enabled. It:
 
   * builds a self-contained JSON bundle for one finished match (stats/scoreboard
@@ -14,6 +14,12 @@ box is enrolled (``.env.agent`` present) and push is enabled. It:
 Idempotency is by ``match_id`` (the central dedups), so a re-push is harmless.
 HTTP uses stdlib ``urllib`` — no new dependency beyond the opt-in ``cryptography``
 that the envelope needs.
+
+Every request first passes :mod:`sqreader.netpolicy`. Under the default
+``local-only`` policy nothing leaves the box: the calls that would have gone to
+a central are refused BEFORE any DNS lookup or socket, and the background ones
+(check-in, offsets, update) simply report "nothing offered" so the reader carries
+on and never enters a retry loop. See ``docs/zerozone-external-urls.md``.
 """
 from __future__ import annotations
 
@@ -28,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, agent_creds, build_config
+from . import __version__, agent_creds, build_config, netpolicy
 from .crypto_envelope import EnvelopeError, seal_json
 
 SCHEMA_MATCH = "sqr-match-1"
@@ -45,6 +51,55 @@ _STATS_TABLES = ("matches", "player_matches", "kill_events", "vehicle_session")
 
 class PushError(Exception):
     """Central unreachable, refused the push, or a bad response."""
+
+
+class PushBlocked(PushError):
+    """The network policy forbids talking to this central (local mode).
+
+    Not a failure of the central: nothing was attempted, so callers must not
+    retry it. Still a ``PushError`` so existing ``except PushError`` paths
+    (e.g. ``sqreader enroll``) report it cleanly.
+    """
+
+
+#: What an operator sees instead of an error when central traffic is off.
+LOCAL_MODE_MESSAGE = "merkezi gönderim kapalı (yerel mod)"
+
+
+def _gate(url: str, purpose: str) -> None:
+    """Refuse (PushBlocked) before anything is sealed, resolved or opened."""
+    try:
+        netpolicy.check_outbound(url, purpose=purpose)
+    except netpolicy.OutboundBlocked as exc:
+        raise PushBlocked(f"{LOCAL_MODE_MESSAGE}: {purpose}") from exc
+
+
+def central_allowed(creds: dict[str, str], *, purpose: str) -> bool:
+    """True when the policy lets this box talk to its central. A blocked
+    attempt is logged and counted once; a box with no usable URL is treated as
+    "not blocked" so the caller's own error path reports it as before."""
+    try:
+        base = _push_base(creds)
+    except PushError:
+        return True
+    try:
+        netpolicy.check_outbound(base, purpose=purpose)
+    except netpolicy.OutboundBlocked:
+        return False
+    return True
+
+
+def push_status(creds: dict[str, str] | None) -> str:
+    """One line for health output. Does not count as a blocked attempt."""
+    if not creds:
+        return "merkezi gönderim kapalı (kayıtlı değil)"
+    try:
+        base = _push_base(creds)
+    except PushError:
+        return "merkezi gönderim kapalı (adres yok)"
+    if not netpolicy.is_allowed(base):
+        return LOCAL_MODE_MESSAGE
+    return "merkezi gönderim etkin"
 
 
 # --------------------------------------------------------------------------
@@ -112,6 +167,7 @@ def enroll(central_url: str, token: str, hw_fp: str, *,
     failure (the central masks unknown/expired/consumed as the same error).
     """
     body = {"token": token, "hw_fp": hw_fp, "platform": platform.system()}
+    _gate(central_url, "enroll")
     resp = _post_json(central_url.rstrip("/") + "/api/enroll", body,
                       timeout=timeout)
     secret = str(resp.get("secret_hex", ""))
@@ -127,6 +183,7 @@ def enroll(central_url: str, token: str, hw_fp: str, *,
 
 def push_match(creds: dict[str, str], bundle: dict[str, Any], *, seq: int,
                timeout: float = 30.0) -> None:
+    _gate(_push_base(creds), "push-match")
     env = seal_json(bundle, secret=_secret(creds),
                     agent_id=creds["SQREADER_AGENT_ID"], seq=seq)
     _post_json(_push_base(creds) + "/ingest/match", env, timeout=timeout)
@@ -142,7 +199,12 @@ def checkin(creds: dict[str, str], payload: dict[str, Any], *, seq: int,
     agent independently verifies (Ed25519) before trusting — so the ack itself
     never needs to be trusted. Best-effort: callers wrap this, a failure is
     logged and forgotten, the live reader is untouched.
+
+    Under the ``local-only`` policy nothing is sent (no telemetry leaves the
+    box) and ``{}`` comes back, exactly like an ack with no hint in it.
     """
+    if not central_allowed(creds, purpose="checkin"):
+        return {}
     env = seal_json(payload, secret=_secret(creds),
                     agent_id=creds["SQREADER_AGENT_ID"], seq=seq)
     return _post_json(_push_base(creds) + "/agent/checkin", env, timeout=timeout)
@@ -154,7 +216,10 @@ def fetch_offsets(creds: dict[str, str], squad_build: str, channel: str, *,
     channel. Returns the raw (still-UNVERIFIED) signed pack dict, or None if none
     is offered. The caller (offset_client.accept) verifies the Ed25519 signature
     before trusting it — the sealed request authenticates us, but the response is
-    only trusted via its own signature."""
+    only trusted via its own signature. Under ``local-only`` nothing is asked
+    and None ("no pack offered") comes back."""
+    if not central_allowed(creds, purpose="offset-fetch"):
+        return None
     req = {"schema": SCHEMA_OFFSETS_REQ, "squad_build": squad_build,
            "channel": channel}
     env = seal_json(req, secret=_secret(creds),
@@ -168,7 +233,10 @@ def fetch_manifest(creds: dict[str, str], platform_tok: str, channel: str, *,
                    seq: int, timeout: float = 15.0) -> dict[str, Any] | None:
     """Ask central for the current SIGNED release manifest for our platform +
     channel. Returns the raw (still-UNVERIFIED) manifest dict, or None. The caller
-    (updater.accept) verifies the Ed25519 signature before trusting it."""
+    (updater.accept) verifies the Ed25519 signature before trusting it. Under
+    ``local-only`` nothing is asked and None comes back."""
+    if not central_allowed(creds, purpose="update-manifest"):
+        return None
     req = {"schema": SCHEMA_MANIFEST_REQ, "platform": platform_tok,
            "channel": channel}
     env = seal_json(req, secret=_secret(creds),
@@ -199,7 +267,9 @@ def download_artifact(creds: dict[str, str], file: str, *,
     verifies sha256). Sends the agent's X-Sqr-Auth so the download works when
     central runs the gate; on an ungated central the header is simply ignored.
     The artifact stays sha256-pinned + Ed25519-signed, so integrity never
-    depends on this header."""
+    depends on this header. Under ``local-only`` nothing is downloaded (None)."""
+    if not central_allowed(creds, purpose="update-download"):
+        return None
     url = (_push_base(creds) + "/agent/download?file="
            + urllib.parse.quote(file, safe=""))
     headers = {"User-Agent": _UA}
@@ -213,6 +283,7 @@ def download_artifact(creds: dict[str, str], file: str, *,
 
 def push_replay(creds: dict[str, str], match_id: str, server_id: str,
                 sqrx_path: str | Path, *, seq: int, timeout: float = 300.0) -> None:
+    _gate(_push_base(creds), "push-replay")
     data = Path(sqrx_path).read_bytes()
     manifest = seal_json(
         {"schema": SCHEMA_REPLAY, "server_id": server_id, "match_id": match_id,
@@ -246,11 +317,20 @@ def flush_backlog(backlog_dir: str | Path, db_path: str | Path,
                   push_replay_files: bool = True) -> dict[str, int]:
     """Push every queued match (stats first, then replay once its .sqrx has
     closed). Idempotent; leaves a marker in place on failure to retry later.
-    Returns counts {sent, pending, errors}."""
+    Returns counts {sent, pending, errors}.
+
+    Under the ``local-only`` policy nothing is sent and the markers are left
+    untouched (no retry storm, no error count): the result carries
+    ``blocked: 1`` and ``pending`` = the queued matches, and the caller keeps
+    recording and computing stats as usual.
+    """
     d = Path(backlog_dir)
     sent = pending = errors = 0
     if not d.is_dir():
         return {"sent": 0, "pending": 0, "errors": 0}
+    if not central_allowed(creds, purpose="push"):
+        queued = sum(1 for _ in d.glob("*.json"))
+        return {"sent": 0, "pending": queued, "errors": 0, "blocked": 1}
     for marker in sorted(d.glob("*.json")):
         try:
             state = json.loads(marker.read_text(encoding="utf-8"))
@@ -283,6 +363,9 @@ def flush_backlog(backlog_dir: str | Path, db_path: str | Path,
 
             marker.unlink(missing_ok=True)
             sent += 1
+        except PushBlocked:
+            return {"sent": sent, "pending": pending, "errors": errors,
+                    "blocked": 1}              # a redirect left the allow list
         except PushError:
             errors += 1                        # central down/refused — keep marker
         except (EnvelopeError, OSError, sqlite3.Error):
@@ -404,8 +487,10 @@ def _send(req: urllib.request.Request, *, timeout: float) -> bytes:
     max_retries = len(_RETRY_BACKOFFS)
     for attempt in range(max_retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            with netpolicy.guarded_urlopen(req, timeout=timeout) as resp:
                 return resp.read()
+        except netpolicy.OutboundBlocked as exc:
+            raise PushBlocked(LOCAL_MODE_MESSAGE) from exc
         except urllib.error.HTTPError as exc:
             if 500 <= exc.code < 600 and attempt < max_retries:
                 time.sleep(_RETRY_BACKOFFS[attempt])
@@ -444,7 +529,8 @@ def current_creds() -> dict[str, str] | None:
 
 
 __all__ = [
-    "PushError", "SCHEMA_MATCH", "SCHEMA_REPLAY", "SCHEMA_CHECKIN",
+    "PushError", "PushBlocked", "LOCAL_MODE_MESSAGE", "central_allowed",
+    "push_status", "SCHEMA_MATCH", "SCHEMA_REPLAY", "SCHEMA_CHECKIN",
     "SCHEMA_OFFSETS_REQ", "SCHEMA_MANIFEST_REQ",
     "build_match_bundle", "enroll", "push_match", "push_replay", "checkin",
     "fetch_offsets", "fetch_manifest", "download_artifact", "enqueue",

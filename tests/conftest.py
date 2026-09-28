@@ -8,9 +8,23 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+import pytest
+
 _TESTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_TESTS_DIR.parent))  # repo root — for `import sqreader`
 sys.path.insert(0, str(_TESTS_DIR))         # tests dir  — for `from conftest import ...`
+
+
+@pytest.fixture(autouse=True)
+def _upstream_net_policy(monkeypatch):
+    """The fork defaults to the `local-only` network policy (sqreader.netpolicy).
+    The pre-existing push / update / offset / notify tests exercise the upstream
+    behaviour with fake central hosts (`c.test`, `central.example`), so they run
+    under an explicit `allow-central`. tests/test_netpolicy.py overrides this per
+    test to prove the default and the blocking."""
+    monkeypatch.setenv("SQREADER_NET_POLICY", "allow-central")
+    monkeypatch.delenv("SQREADER_NET_ALLOW_HOSTS", raising=False)
+    yield
 
 
 class FakeProcessMemory:

@@ -37,6 +37,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from sqreader import netpolicy  # noqa: E402
 from sqreader.squad.capzones import extract_capzone_data, to_raw_layer_key  # noqa: E402
 
 SQUADCALC_API = "https://squadcalc.app/api"
@@ -56,6 +57,9 @@ def _load_json(path: Path):
 def _fetch_raw(raw_key: str, timeout: float) -> dict | None:
     """GET one SquadCalc layer. None on any HTTP/parse failure (caller skips)."""
     url = f"{SQUADCALC_API}/get/layer?name={urllib.parse.quote(raw_key)}"
+    # Manual data-refresh tool, but still external: the default local-only
+    # policy refuses it (run with SQREADER_NET_POLICY=allow-central).
+    netpolicy.check_outbound(url, purpose="capzone-fetch")
     req = urllib.request.Request(
         url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -129,6 +133,11 @@ def main() -> int:
                                       encoding="utf-8")
                 n_fetched += 1
                 time.sleep(max(0.0, args.sleep))
+            except netpolicy.OutboundBlocked:
+                print("FATAL: dış ağ politikası SquadCalc'a erişimi engelliyor; "
+                      "bu elle çalıştırılan betik için "
+                      "SQREADER_NET_POLICY=allow-central verin.", file=sys.stderr)
+                return 2
             except (urllib.error.HTTPError, urllib.error.URLError,
                     ValueError, OSError) as e:
                 # 404 (or any hard failure) → record and move on, no retry storm.

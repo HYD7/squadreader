@@ -96,7 +96,10 @@ def accept(manifest: Any, *, current_version: str, min_applied: str,
 def fetch_and_accept(creds: dict[str, str], channel: str, *, seq: int,
                      timeout: float = 15.0,
                      min_applied: str = "") -> dict[str, Any] | None:
-    """Fetch central's current manifest for our platform+channel and verify it."""
+    """Fetch central's current manifest for our platform+channel and verify it.
+    Under the ``local-only`` network policy no update check is made (None)."""
+    if not ingest_client.central_allowed(creds, purpose="update-check"):
+        return None
     try:
         manifest = ingest_client.fetch_manifest(creds, platform_name(), channel,
                                                  seq=seq, timeout=timeout)
@@ -108,7 +111,10 @@ def fetch_and_accept(creds: dict[str, str], channel: str, *, seq: int,
 
 def download_verified(creds: dict[str, str], artifact: str, sha256: str, *,
                       timeout: float = 300.0) -> bytes | None:
-    """Download the artifact and verify its sha256. None on any failure."""
+    """Download the artifact and verify its sha256. None on any failure (and,
+    under the ``local-only`` network policy, without making any request)."""
+    if not ingest_client.central_allowed(creds, purpose="update-download"):
+        return None
     try:
         data = ingest_client.download_artifact(creds, artifact, timeout=timeout)
     except ingest_client.PushError:
