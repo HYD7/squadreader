@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   useViewerStore, LAYER_ORDER, NUMBER_ORDER, LAYER_LABELS, type LayerKey,
 } from "../state/viewerStore";
+import { L } from "../zz/l";
+import type { TrKey } from "../zz/tr";
 
 export function SettingsMenu() {
   const [open, setOpen] = useState(false);
@@ -34,7 +36,7 @@ export function SettingsMenu() {
     <label className="settings-row">
       <input type="checkbox" checked={!!layers[k]}
              onChange={() => toggleLayer(k)} />
-      <span>{LAYER_LABELS[k]}</span>
+      <span>{L(("layer." + k) as TrKey, LAYER_LABELS[k])}</span>
     </label>
   );
 
@@ -42,7 +44,8 @@ export function SettingsMenu() {
     <div className="settings-wrap" ref={rootRef}>
       <button className={"settings-btn" + (open ? " on" : "")}
               onClick={() => setOpen((o) => !o)}
-              title="display settings" aria-label="display settings"
+              title={L("settings.title", "display settings")}
+              aria-label={L("settings.title", "display settings")}
               aria-expanded={open}>
         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor"
@@ -56,9 +59,9 @@ export function SettingsMenu() {
       </button>
       {open && (
         <div className="settings-menu" role="menu">
-          <div className="settings-group">Numbers</div>
+          <div className="settings-group">{L("settings.numbers", "Numbers")}</div>
           {NUMBER_ORDER.map((k) => <Row key={k} k={k} />)}
-          <div className="settings-group">Map layers</div>
+          <div className="settings-group">{L("settings.layers", "Map layers")}</div>
           {LAYER_ORDER.map((k) => <Row key={k} k={k} />)}
         </div>
       )}

@@ -12,6 +12,9 @@ import type {
   VehicleSpawner,
 } from "../state/types";
 import { fmtInt, ftLabel, findPlacer, markerLabel } from "./entityInfo";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -62,7 +65,7 @@ function Badges({ items }: { items: [string, boolean | null | undefined][] }) {
 function posRow(pos: Vec3 | null | undefined) {
   if (!pos) return null;
   return (
-    <Row label="POS">
+    <Row label={L("info.row.pos", "POS")}>
       <span className="info-mono">
         {Math.round(pos.x)}, {Math.round(pos.y)}, {pos.z != null ? Math.round(pos.z) : "—"}
       </span>
@@ -77,17 +80,17 @@ function MarkerBody({ e }: { e: Marker }) {
   const placer = findPlacer(e, players);
   return (
     <>
-      <Row label="TEAM">{e.team ?? "—"}</Row>
+      <Row label={L("info.row.team", "TEAM")}>{e.team ?? "—"}</Row>
       {e.squad != null && (
-        <Row label="ROLE">Squad {e.squad} · {ftLabel(e.fireTeamId)}</Row>
+        <Row label={L("info.row.role", "ROLE")}>{L("tip.squad", "Squad")} {e.squad} · {ftLabel(e.fireTeamId)}</Row>
       )}
-      <Row label="PLACER">
+      <Row label={L("info.row.placer", "PLACER")}>
         {placer
           ? <b>{placer.clanTag ? `[${placer.clanTag}] ` : ""}{placer.name ?? "?"}</b>
-          : <span className="info-mute">offline / unresolved</span>}
+          : <span className="info-mute">{L("info.offline", "offline / unresolved")}</span>}
       </Row>
       <Row label="ID">{e.id}</Row>
-      <Row label="RAW TYPE">
+      <Row label={L("info.row.rawType", "RAW TYPE")}>
         <span className="info-mono">{(e.type ?? "").replace(/^BP_MapMarker_/, "") || "—"}</span>
       </Row>
       {posRow(e.position)}
@@ -106,32 +109,36 @@ function DeployableBody({ e, worldTimeSec }: {
     ? fmtCountdown(e.estimatedDeathTime - worldTimeSec) : null;
   return (
     <>
-      <Row label="TEAM">{e.team ?? "—"}{e.isFob ? " · FOB" : ""}</Row>
-      <Bar label="HP" cur={e.health} max={e.maxHealth} />
-      <Row label="PLACED BY">
+      <Row label={L("info.row.team", "TEAM")}>{e.team ?? "—"}{e.isFob ? " · FOB" : ""}</Row>
+      <Bar label={L("info.bar.hp", "HP")} cur={e.health} max={e.maxHealth} />
+      <Row label={L("info.row.placer", "PLACED BY")}>
         {e.placer ? <b>{e.placer}</b> : <span className="info-mute">—</span>}
       </Row>
       {e.isFob && <>
-        <Bar label="AMMO" cur={e.ammo} max={e.maxAmmo} color="var(--accent)" />
-        <Bar label="BUILD" cur={e.construction} max={e.maxConstruction} color="var(--accent-2)" />
+        <Bar label={L("info.bar.ammo", "AMMO")} cur={e.ammo} max={e.maxAmmo} color="var(--accent)" />
+        <Bar label={L("info.bar.build", "BUILD")} cur={e.construction} max={e.maxConstruction} color="var(--accent-2)" />
         {(e.ammoPerSecond != null || e.cpPerSecond != null) && (
-          <Row label="RATE">
+          <Row label={L("info.row.rate", "RATE")}>
             <span className="info-mono">
-              ammo {e.ammoPerSecond ?? "—"}/s · build {e.cpPerSecond ?? "—"}/s
+              {IS_ZZ
+                ? t("info.rate", { a: e.ammoPerSecond ?? "—", b: e.cpPerSecond ?? "—" })
+                : `ammo ${e.ammoPerSecond ?? "—"}/s · build ${e.cpPerSecond ?? "—"}/s`}
             </span>
           </Row>
         )}
         {bleedLeft && (
-          <Row label="BLEED"><span className="info-danger">☠ {bleedLeft}</span></Row>
+          <Row label={L("info.row.bleed", "BLEED")}><span className="info-danger">☠ {bleedLeft}</span></Row>
         )}
-        {e.nearbyEnemies != null && <Row label="ENEMIES">{e.nearbyEnemies}</Row>}
+        {e.nearbyEnemies != null && <Row label={L("info.row.enemies", "ENEMIES")}>{e.nearbyEnemies}</Row>}
         <Badges items={[
-          ["Sieged", e.fobSieged], ["Spawning", e.fobSpawningEnabled],
-          ["Bleeding", e.fobBleeding], ["Overrun", e.fobOverrun],
+          [L("info.badge.sieged", "Sieged"), e.fobSieged],
+          [L("info.badge.spawning", "Spawning"), e.fobSpawningEnabled],
+          [L("info.badge.bleeding", "Bleeding"), e.fobBleeding],
+          [L("info.badge.overrun", "Overrun"), e.fobOverrun],
         ]} />
       </>}
-      {e.buildState != null && <Row label="BUILT">{e.buildState}</Row>}
-      {e.classShort && <Row label="CLASS"><span className="info-mono">{e.classShort}</span></Row>}
+      {e.buildState != null && <Row label={L("info.row.built", "BUILT")}>{e.buildState}</Row>}
+      {e.classShort && <Row label={L("info.row.class", "CLASS")}><span className="info-mono">{e.classShort}</span></Row>}
       <Row label="ID">{e.id}</Row>
       {posRow(e.position)}
     </>
@@ -141,16 +148,17 @@ function DeployableBody({ e, worldTimeSec }: {
 function SpawnerBody({ e }: { e: VehicleSpawner }) {
   return (
     <>
-      <Row label="TEAM">{e.team ?? "—"}</Row>
-      <Row label="VEHICLE"><b>{vehicleDisplayName(e.vehicleClass ?? e.classShort)}</b></Row>
+      <Row label={L("info.row.team", "TEAM")}>{e.team ?? "—"}</Row>
+      <Row label={L("info.row.vehicle", "VEHICLE")}><b>{vehicleDisplayName(e.vehicleClass ?? e.classShort)}</b></Row>
       {(() => { const cd = fmtCountdown(e.nextSpawnSec);
-        return cd ? <Row label="RESPAWN"><span className="info-mono">{cd}</span></Row>
+        return cd ? <Row label={L("info.row.respawn", "RESPAWN")}><span className="info-mono">{cd}</span></Row>
                   : null; })()}
       <Badges items={[
-        ["Ready", e.spawnerEnabled], ["Spawning", e.spawnInProgress],
-        ["Overlapped", e.spawnOverlapped],
+        [L("info.badge.ready", "Ready"), e.spawnerEnabled],
+        [L("info.badge.spawning", "Spawning"), e.spawnInProgress],
+        [L("info.badge.overlapped", "Overlapped"), e.spawnOverlapped],
       ]} />
-      {e.actorName && <Row label="ACTOR"><span className="info-mono">{e.actorName}</span></Row>}
+      {e.actorName && <Row label={L("info.row.actor", "ACTOR")}><span className="info-mono">{e.actorName}</span></Row>}
       <Row label="ID">{e.id}</Row>
       {posRow(e.position)}
     </>
@@ -160,10 +168,11 @@ function SpawnerBody({ e }: { e: VehicleSpawner }) {
 function RallyBody({ e }: { e: RallyPoint }) {
   return (
     <>
-      <Row label="TEAM">{e.team ?? "—"}</Row>
-      <Row label="SQUAD">{e.squadName ?? (e.squadId != null ? `#${e.squadId}` : "—")}</Row>
-      {e.spawnsRemaining != null && <Row label="SPAWNS">{e.spawnsRemaining}</Row>}
-      <Badges items={[["Spawning", e.spawningEnabled], ["Sieged", e.sieged]]} />
+      <Row label={L("info.row.team", "TEAM")}>{e.team ?? "—"}</Row>
+      <Row label={L("info.row.squad", "SQUAD")}>{e.squadName ?? (e.squadId != null ? `#${e.squadId}` : "—")}</Row>
+      {e.spawnsRemaining != null && <Row label={L("info.row.spawns", "SPAWNS")}>{e.spawnsRemaining}</Row>}
+      <Badges items={[[L("info.badge.spawning", "Spawning"), e.spawningEnabled],
+                      [L("info.badge.sieged", "Sieged"), e.sieged]]} />
       <Row label="ID">{e.id}</Row>
       {posRow(e.position)}
     </>
@@ -173,26 +182,26 @@ function RallyBody({ e }: { e: RallyPoint }) {
 function CapzoneBody({ e }: { e: CaptureZone }) {
   return (
     <>
-      <Row label="FLAG"><b>{e.flagName ?? e.name ?? "?"}</b></Row>
-      <Row label="OWNER">
+      <Row label={L("info.row.flag", "FLAG")}><b>{e.flagName ?? e.name ?? "?"}</b></Row>
+      <Row label={L("info.row.owner", "OWNER")}>
         <span className="info-dot" style={{ background: teamColor(e.owningTeam) }} />
-        Team {e.owningTeam ?? "—"}
+        {IS_ZZ ? t("info.team", { n: e.owningTeam ?? "—" }) : `Team ${e.owningTeam ?? "—"}`}
       </Row>
       {e.capturingTeam != null && (
-        <Row label="CAPPING">
+        <Row label={L("info.row.capping", "CAPPING")}>
           <span className="info-dot" style={{ background: teamColor(e.capturingTeam) }} />
-          Team {e.capturingTeam}
+          {IS_ZZ ? t("info.team", { n: e.capturingTeam }) : `Team ${e.capturingTeam}`}
         </Row>
       )}
-      <Bar label="CAP" cur={e.capturePercent != null ? e.capturePercent * 100 : null} max={100} />
-      {e.captureRate != null && <Row label="RATE">{e.captureRate}</Row>}
+      <Bar label={L("info.bar.cap", "CAP")} cur={e.capturePercent != null ? e.capturePercent * 100 : null} max={100} />
+      {e.captureRate != null && <Row label={L("info.row.rate", "RATE")}>{e.captureRate}</Row>}
       {e.playerAdvantage != null && (
-        <Row label="ADVANTAGE">
+        <Row label={L("info.row.advantage", "ADVANTAGE")}>
           <span className="info-mono">{e.playerAdvantage > 0 ? "+" : ""}
             {e.playerAdvantage.toFixed(1)}</span>
         </Row>
       )}
-      <Badges items={[["Locked", e.isLocked]]} />
+      <Badges items={[[L("info.badge.locked", "Locked"), e.isLocked]]} />
       <Row label="ID">{e.id}</Row>
       {posRow(e.position)}
     </>
@@ -202,15 +211,16 @@ function CapzoneBody({ e }: { e: CaptureZone }) {
 function ProjectileBody({ e }: { e: Projectile }) {
   return (
     <>
-      <Row label="TEAM">{e.team ?? "—"}</Row>
-      <Row label="KIND">{e.kind ?? e.classShort ?? "projectile"}</Row>
+      <Row label={L("info.row.team", "TEAM")}>{e.team ?? "—"}</Row>
+      <Row label={L("info.row.kind", "KIND")}>{e.kind ?? e.classShort ?? L("tip.projectile", "projectile")}</Row>
       {e.isExplosive && e.explosiveBaseDamage != null && (
-        <Row label="DAMAGE">{fmtInt(e.explosiveBaseDamage)}
+        <Row label={L("info.row.damage", "DAMAGE")}>{fmtInt(e.explosiveBaseDamage)}
           {e.explosiveKillZoneRadius != null
             ? ` · r ${fmtInt(e.explosiveKillZoneRadius)}` : ""}</Row>
       )}
-      {e.firer && <Row label="FIRER"><b>{e.firer}</b></Row>}
-      <Badges items={[["Tracer", e.isTracer], ["Impacted", e.hasImpacted]]} />
+      {e.firer && <Row label={L("info.row.firer", "FIRER")}><b>{e.firer}</b></Row>}
+      <Badges items={[[L("info.badge.tracer", "Tracer"), e.isTracer],
+                      [L("info.badge.impacted", "Impacted"), e.hasImpacted]]} />
       <Row label="ID">{e.id}</Row>
       {posRow(e.position)}
     </>
@@ -241,7 +251,7 @@ export function InfoPanel() {
     }
     case "deployable": {
       const e = find<Deployable>(snap?.deployables);
-      if (e) { title = (e.isFob ? "FOB · " : "") + (e.classShort ?? "Deployable");
+      if (e) { title = (e.isFob ? "FOB · " : "") + (e.classShort ?? L("info.deployable", "Deployable"));
                team = e.team;
                bodyEl = <DeployableBody e={e}
                           worldTimeSec={snap?.gameState?.worldTimeSec} />; }
@@ -255,18 +265,18 @@ export function InfoPanel() {
     }
     case "rally": {
       const e = find<RallyPoint>(snap?.rallyPoints);
-      if (e) { title = "Rally Point"; team = e.team; bodyEl = <RallyBody e={e} />; }
+      if (e) { title = L("info.rally", "Rally Point"); team = e.team; bodyEl = <RallyBody e={e} />; }
       break;
     }
     case "capzone": {
       const e = find<CaptureZone>(snap?.captureZones);
-      if (e) { title = e.flagName ?? e.name ?? "Capture Zone";
+      if (e) { title = e.flagName ?? e.name ?? L("info.zone", "Capture Zone");
                team = e.owningTeam; bodyEl = <CapzoneBody e={e} />; }
       break;
     }
     case "projectile": {
       const e = find<Projectile>(snap?.projectiles);
-      if (e) { title = e.classShort ?? "Projectile"; team = e.team; bodyEl = <ProjectileBody e={e} />; }
+      if (e) { title = e.classShort ?? L("info.projectile", "Projectile"); team = e.team; bodyEl = <ProjectileBody e={e} />; }
       break;
     }
   }
@@ -278,11 +288,11 @@ export function InfoPanel() {
     return (
       <div id="info-panel" className="detail-panel">
         <header>
-          <h2>no longer on the map</h2>
-          <button onClick={() => close(null)} title="Close (esc)">✕</button>
+          <h2>{L("info.gone", "no longer on the map")}</h2>
+          <button onClick={() => close(null)} title={L("info.close", "Close (esc)")}>✕</button>
         </header>
         <div className="body">
-          <div className="empty">this object is no longer in the snapshot — despawned or out of range</div>
+          <div className="empty">{L("info.goneBody", "this object is no longer in the snapshot — despawned or out of range")}</div>
         </div>
       </div>
     );
@@ -295,7 +305,7 @@ export function InfoPanel() {
           <span className="dot" style={{ background: tc }} />
           {title}
         </h2>
-        <button onClick={() => close(null)} title="Close (esc)">✕</button>
+        <button onClick={() => close(null)} title={L("info.close", "Close (esc)")}>✕</button>
       </header>
       <div className="body">
         <div className="info-rows">{bodyEl}</div>

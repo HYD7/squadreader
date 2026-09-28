@@ -13,6 +13,9 @@ import { vehiclePhotoUrl } from "../data/vehiclePhotos";
 import { vehicleLoadout, type LoadoutWeapon } from "../data/vehicleLoadouts";
 import { vehicleWeaponDisplayName } from "../data/vehicleWeaponsStatic";
 import { useStaticCatalogs } from "../data/staticCatalogs";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t, type TrKey } from "../zz/tr";
 
 function fmtInt(v: number | null | undefined) {
   return v == null ? "—" : Math.round(v).toString();
@@ -32,9 +35,9 @@ function VehiclePhoto({ url }: { url: string }) {
 }
 
 function seatLabel(idx: number) {
-  if (idx === 0) return "DRIVER";
-  if (idx === 1) return "GUNNER";
-  return `SEAT ${idx + 1}`;
+  if (idx === 0) return L("vp.seat.driver", "DRIVER");
+  if (idx === 1) return L("vp.seat.gunner", "GUNNER");
+  return IS_ZZ ? t("vp.seat.n", { n: idx + 1 }) : `SEAT ${idx + 1}`;
 }
 
 const SEAT_ROLE_TR: Record<string, string> = {
@@ -48,9 +51,17 @@ const SEAT_ROLE_TR: Record<string, string> = {
 // generic "KOLTUK N"). Fall back to the positional label only when the
 // seat isn't in the catalog. Unmapped English roles (e.g. "TOW Gunner")
 // are shown uppercased — descriptive beats a wrong Turkish label.
+// Zero Zone: known roles come from the Turkish dictionary; unknown ones stay as
+// the (uppercased) game term.
+function roleTr(role: string): string {
+  return IS_ZZ && Object.prototype.hasOwnProperty.call(SEAT_ROLE_TR, role)
+    ? t(("vp.role." + role) as TrKey)
+    : (SEAT_ROLE_TR[role] ?? role.toUpperCase());
+}
+
 function seatRoleLabel(role: string | null | undefined, idx: number): string {
   if (!role) return seatLabel(idx);
-  return SEAT_ROLE_TR[role] ?? role.toUpperCase();
+  return roleTr(role);
 }
 
 // Vehicle component classification — drives the panel layout. Matches
@@ -62,13 +73,13 @@ function classifyComponent(c: VehicleComponent): { slot: CompSlot; idx: number; 
   const n = c.name;
   const cls = c.className;
   if (cls === "SQVehicleEngine" || /engine/i.test(n))
-    return { slot: "engine", idx: 0, label: "Engine" };
+    return { slot: "engine", idx: 0, label: L("vp.comp.engine", "Engine") };
   if (cls === "SQVehicleAmmoBox" || /ammo/i.test(n))
-    return { slot: "ammo", idx: 0, label: "Ammo" };
+    return { slot: "ammo", idx: 0, label: L("vp.comp.ammo", "Ammo") };
   if (/Main.?Rotor/i.test(n) || /MainBlade/i.test(n))
-    return { slot: "rotorMain", idx: 0, label: "Rotor" };
+    return { slot: "rotorMain", idx: 0, label: L("vp.comp.rotor", "Rotor") };
   if (/Tail.?Rotor/i.test(n) || /TailBlade/i.test(n))
-    return { slot: "rotorTail", idx: 0, label: "Tail" };
+    return { slot: "rotorTail", idx: 0, label: L("vp.comp.tail", "Tail") };
   const wheelMatch = n.match(/wheel_([LR])(\d+)/i);
   if (wheelMatch) {
     const side = wheelMatch[1]!.toUpperCase();
@@ -79,9 +90,9 @@ function classifyComponent(c: VehicleComponent): { slot: CompSlot; idx: number; 
       label: `${side}${idx}`,
     };
   }
-  if (/^TrackLeft/i.test(n))  return { slot: "trackL", idx: 0, label: "Left Track" };
-  if (/^TrackRight/i.test(n)) return { slot: "trackR", idx: 0, label: "Right Track" };
-  if (/turret/i.test(n))      return { slot: "turretBase", idx: 0, label: "Turret" };
+  if (/^TrackLeft/i.test(n))  return { slot: "trackL", idx: 0, label: L("vp.comp.trackL", "Left Track") };
+  if (/^TrackRight/i.test(n)) return { slot: "trackR", idx: 0, label: L("vp.comp.trackR", "Right Track") };
+  if (/turret/i.test(n))      return { slot: "turretBase", idx: 0, label: L("vp.comp.turret", "Turret") };
   // Strip "Component" suffix for readability
   const label = n.replace(/Component$/i, "");
   return { slot: "other", idx: 0, label };
@@ -138,7 +149,7 @@ function weaponTypeFromClass(cls: string | null | undefined): string {
 }
 
 function roleDisplay(role: string): string {
-  return SEAT_ROLE_TR[role] ?? role.toUpperCase();
+  return roleTr(role);
 }
 
 // Live magazine readout: one pip per magazine (fill = current/max), plus a
@@ -167,7 +178,9 @@ function AmmoReadout({ cur, max, type }: {
       </div>
       <span className={`vp-ammo-sum tag-${type}`}>
         {totalCur}<span className="vp-ammo-max">/{totalMax}</span>
-        <span className="vp-ammo-lbl"> rds · {n} mag{n > 1 ? "s" : ""}</span>
+        <span className="vp-ammo-lbl">{IS_ZZ
+          ? ` ${t("vp.rounds")} · ${t("vp.mags", { n })}`
+          : ` rds · ${n} mag${n > 1 ? "s" : ""}`}</span>
       </span>
     </div>
   );
@@ -189,15 +202,15 @@ export function VehiclePanel() {
     return (
       <div id="vehicle-panel">
         <header>
-          <h2>vehicle lost</h2>
-          <button onClick={() => close(null)} title="close">✕</button>
+          <h2>{L("vp.lost", "vehicle lost")}</h2>
+          <button onClick={() => close(null)} title={L("vp.close", "close")}>✕</button>
         </header>
         <div className="body">
           <div className="row" style={{ opacity: 0.6 }}>
             id <span style={{ fontFamily: "monospace" }}>{id}</span>
           </div>
           <div style={{ opacity: 0.6, marginTop: 8 }}>
-            no longer in the snapshot — destroyed, lost, or out of range
+            {L("vp.lostBody", "no longer in the snapshot — destroyed, lost, or out of range")}
           </div>
         </div>
       </div>
@@ -254,10 +267,10 @@ export function VehiclePanel() {
         <div className="vp-head-actions">
           <button className={"vp-follow" + (followVehicleId === v.id ? " on" : "")}
                   onClick={() => setFollowVehicle(followVehicleId === v.id ? null : v.id)}
-                  title="follow this vehicle">
-            {followVehicleId === v.id ? "FOLLOW ✓" : "FOLLOW"}
+                  title={L("vp.followTitle", "follow this vehicle")}>
+            {followVehicleId === v.id ? L("pp.followOn", "FOLLOW ✓") : L("pp.follow", "FOLLOW")}
           </button>
-          <button onClick={() => close(null)} title="close (esc)">✕</button>
+          <button onClick={() => close(null)} title={L("vp.closeEsc", "close (esc)")}>✕</button>
         </div>
       </header>
       <div className="body">
@@ -266,11 +279,11 @@ export function VehiclePanel() {
           return photoUrl ? <VehiclePhoto key={photoUrl} url={photoUrl} /> : null;
         })()}
         <div className="meta">
-          <span>Team: <b>{v.team ?? "—"}</b></span>
-          <span>Status: <b className={alive ? "alive" : "dead"}>
-            {alive ? "Intact" : "Destroyed"}
+          <span>{L("vp.team", "Team")}: <b>{v.team ?? "—"}</b></span>
+          <span>{L("vp.status", "Status")}: <b className={alive ? "alive" : "dead"}>
+            {alive ? L("vp.intact", "Intact") : L("vp.destroyed", "Destroyed")}
           </b></span>
-          {v.kind && <span>Type: <b>{v.kind}</b></span>}
+          {v.kind && <span>{L("vp.type", "Type")}: <b>{v.kind}</b></span>}
         </div>
 
         <div className="hp-row">
@@ -283,10 +296,12 @@ export function VehiclePanel() {
         </div>
 
         {v.attached && (
-          <div className="note">attached to another object / parked</div>
+          <div className="note">{L("vp.attached", "attached to another object / parked")}</div>
         )}
         {v.lastDamager && (
-          <div className="note">last hit by: {v.lastDamager.name ?? "?"}</div>
+          <div className="note">{IS_ZZ
+            ? t("vp.lastHit", { name: v.lastDamager.name ?? "?" })
+            : `last hit by: ${v.lastDamager.name ?? "?"}`}</div>
         )}
 
         {v.resourcePools && v.resourcePools.length > 0 && (() => {
@@ -336,14 +351,14 @@ export function VehiclePanel() {
           };
           return (
             <>
-              <h3>RESOURCES</h3>
+              <h3>{L("vp.resources", "RESOURCES")}</h3>
               <div className="vp-res-grid">
                 {ammoPools.map((p, i) => (
-                  <Row key={"a" + i} p={p} alt="ammo" label="AMMO"
+                  <Row key={"a" + i} p={p} alt={L("vp.altAmmo", "ammo")} label={L("vp.ammo", "AMMO")}
                        iconUrl="./icons/general/supplies_ammo_square.png" />
                 ))}
                 {supplyPools.map((p, i) => (
-                  <Row key={"s" + i} p={p} alt="supply" label="BUILD"
+                  <Row key={"s" + i} p={p} alt={L("vp.altSupply", "supply")} label={L("vp.build", "BUILD")}
                        iconUrl="./icons/general/supplies_construction_square.png" />
                 ))}
               </div>
@@ -353,7 +368,7 @@ export function VehiclePanel() {
 
         {v.components && v.components.length > 0 && (
           <>
-            <h3>COMPONENTS</h3>
+            <h3>{L("vp.components", "COMPONENTS")}</h3>
             <div className="vc-grid">
               {(() => {
                 // Group by anatomical slot so the layout matches the
@@ -497,8 +512,9 @@ export function VehiclePanel() {
                 r.live = leftover.shift()!; used.add(r.live);
               }
             }
-            leftover.forEach((t, i) => rows.push({ key: `o${i}`, role: "WEAPON",
-              occ: null, live: t, switchable: [], turretClass: null,
+            leftover.forEach((lt, i) => rows.push({ key: `o${i}`,
+              role: L("vp.weapon", "WEAPON"),
+              occ: null, live: lt, switchable: [], turretClass: null,
               isWeaponSeat: true }));
           }
 
@@ -524,7 +540,9 @@ export function VehiclePanel() {
 
           return (
             <>
-              <h3>CREW &amp; WEAPONS ({occupiedSeats}/{totalSeats})</h3>
+              <h3>{IS_ZZ
+                ? t("vp.crew", { o: occupiedSeats, t: totalSeats })
+                : <>CREW &amp; WEAPONS ({occupiedSeats}/{totalSeats})</>}</h3>
               <div className="vp-crew">
                 {rows.map((r) => {
                   const hasAmmo = !!(r.live?.magazines
@@ -543,7 +561,7 @@ export function VehiclePanel() {
                             {r.occ.occupantName}
                           </span>
                         ) : r.occ ? (
-                          <span className="vp-crew-empty">empty</span>
+                          <span className="vp-crew-empty">{L("vp.empty", "empty")}</span>
                         ) : null}
                       </div>
                       {wepName && (hasAmmo || r.isWeaponSeat) && (
@@ -578,7 +596,7 @@ export function VehiclePanel() {
               </div>
               {!v.seats && occupiedSeats > 0 && (
                 <div className="note" style={{ marginTop: 8 }}>
-                  seat slots inferred by position
+                  {L("vp.inferred", "seat slots inferred by position")}
                 </div>
               )}
             </>

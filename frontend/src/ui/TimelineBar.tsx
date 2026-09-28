@@ -8,6 +8,9 @@
 
 import { useViewerStore } from "../state/viewerStore";
 import type { Snapshot } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 function fmtMMSS(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";
@@ -95,24 +98,24 @@ export function TimelineBar() {
 
   return (
     <div id="timeline-bar"
-         title="Space: play/pause · F: Fit map · Tab: scoreboard">
+         title={L("tl.hint", "Space: play/pause · F: Fit map · Tab: scoreboard")}>
       <button className="tb-btn" onClick={togglePlay}
-              title={playing ? "pause (space)" : "play (space)"}>
+              title={playing ? L("tl.pause", "pause (space)") : L("tl.play", "play (space)")}>
         {playing ? "⏸" : "▶"}
       </button>
       <button className="tb-btn" onClick={() => seekDeltaMs(-30_000)}
-              title="back 30s">⏮ 30s</button>
+              title={L("tl.back", "back 30s")}>{L("tl.backLabel", "⏮ 30s")}</button>
       <button className="tb-btn" onClick={() => seekDeltaMs(30_000)}
-              title="forward 30s">30s ⏭</button>
+              title={L("tl.forward", "forward 30s")}>{L("tl.forwardLabel", "30s ⏭")}</button>
       <input className="tb-scrub" type="range"
              min={0} max={100} step={0.05}
              value={pct} onChange={onScrub}
-             title="timeline (drag)"
+             title={L("tl.scrub", "timeline (drag)")}
              style={{ "--pct": `${pct}%` } as React.CSSProperties} />
       <span className="tb-clock">
         {fmtMMSS(elapsedMs)} / {fmtMMSS(durationMs)}
       </span>
-      <div className="tb-speeds">
+      <div className="tb-speeds" title={IS_ZZ ? t("tl.speed") : undefined}>
         {SPEEDS.map((sp) => (
           <button key={sp}
                   className={"tb-spd " + (speed === sp ? "active" : "")}

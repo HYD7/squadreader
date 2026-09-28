@@ -11,27 +11,33 @@ import { weaponDisplayName, weaponStatic } from "../data/weaponsStatic";
 import { useStaticCatalogs } from "../data/staticCatalogs";
 import { useViewerStore } from "../state/viewerStore";
 import type { Player, Snapshot } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 function fmtInt(v: number | null | undefined) {
   return v == null ? "—" : Math.round(v).toString();
 }
 
 function lifeLabel(life: string | null): string {
-  if (life === "incapacitated") return "downed — awaiting revive";
-  if (life === "bleeding")      return "bleeding";
-  if (life === "healthy")       return "healthy";
+  if (life === "incapacitated") return L("pp.life.down", "downed — awaiting revive");
+  if (life === "bleeding")      return L("pp.life.bleeding", "bleeding");
+  if (life === "healthy")       return L("pp.life.healthy", "healthy");
   return "—";
 }
 
 function voiceLabel(vc: string): string {
   switch (vc) {
-    case "local":       return "Local";
-    case "squad":       return "Squad";
-    case "command":     return "Command";
-    case "toCommander": return "To Commander";
+    case "local":       return L("pp.voice.local", "Local");
+    case "squad":       return L("pp.voice.squad", "Squad");
+    case "command":     return L("pp.voice.command", "Command");
+    case "toCommander": return L("pp.voice.toCommander", "To Commander");
     default:
       // commandSQ1..9 — commander broadcasting to a specific squad.
-      if (vc.startsWith("commandSQ")) return `Commander → Squad ${vc.slice(9)}`;
+      if (vc.startsWith("commandSQ")) {
+        return IS_ZZ ? t("pp.voice.commandSq", { n: vc.slice(9) })
+                     : `Commander → Squad ${vc.slice(9)}`;
+      }
       return vc;
   }
 }
@@ -73,11 +79,11 @@ export function PlayerPanel() {
     return (
       <div id="player-panel" className="detail-panel">
         <header>
-          <h2>player lost</h2>
-          <button onClick={() => close(null)} title="close">✕</button>
+          <h2>{L("pp.lost", "player lost")}</h2>
+          <button onClick={() => close(null)} title={L("pp.close", "close")}>✕</button>
         </header>
         <div className="body">
-          <div className="empty">no longer in the snapshot — left, switched teams, or out of range</div>
+          <div className="empty">{L("pp.lostBody", "no longer in the snapshot — left, switched teams, or out of range")}</div>
         </div>
       </div>
     );
@@ -128,14 +134,15 @@ export function PlayerPanel() {
           <span className="dot" style={{ background: tc }} />
           {p.clanTag ? `[${p.clanTag}] ` : ""}{p.name ?? "?"}
           {voice && <span className="pp-voice"
-            title={`Talking: ${voiceLabel(voice)}`}>🎙</span>}
+            title={IS_ZZ ? t("pp.talking", { v: voiceLabel(voice) })
+                         : `Talking: ${voiceLabel(voice)}`}>🎙</span>}
         </h2>
-        <button onClick={() => close(null)} title="close (esc)">✕</button>
+        <button onClick={() => close(null)} title={L("pp.closeEsc", "close (esc)")}>✕</button>
       </header>
       <div className="body">
         <div className="pp-sub">
-          Team <b style={{ color: tc }}>{p.teamId ?? "—"}</b>
-          {inSquad && <> · Squad <b>{p.squadId}</b>{sq?.name ? ` · ${sq.name}` : ""}</>}
+          {L("pp.team", "Team")} <b style={{ color: tc }}>{p.teamId ?? "—"}</b>
+          {inSquad && <> · {L("pp.squad", "Squad")} <b>{p.squadId}</b>{sq?.name ? ` · ${sq.name}` : ""}</>}
         </div>
 
         {/* Role + FOLLOW */}
@@ -149,8 +156,8 @@ export function PlayerPanel() {
           </div>
           <button className={"pp-follow" + (following ? " on" : "")}
                   onClick={toggleFollow}
-                  title="keep camera on this player">
-            {following ? "FOLLOW ✓" : "FOLLOW"}
+                  title={L("pp.followTitle", "keep camera on this player")}>
+            {following ? L("pp.followOn", "FOLLOW ✓") : L("pp.follow", "FOLLOW")}
           </button>
         </div>
 
@@ -163,7 +170,7 @@ export function PlayerPanel() {
         </div>
         {sprPct != null && (
           <div className="pp-bar">
-            <span className="pp-bar-lbl">{fmtInt(sprPct)}% STA</span>
+            <span className="pp-bar-lbl">{fmtInt(sprPct)}% {L("pp.sta", "STA")}</span>
             <div className="pp-track"><div className="pp-fill"
               style={{ width: `${sprPct}%`, background: "var(--accent)" }} /></div>
             <span className="pp-bar-num">{fmtInt(sprPct)}%</span>
@@ -172,48 +179,51 @@ export function PlayerPanel() {
 
         {/* Fact rows */}
         <div className="pp-rows">
-          <Row label="PING">
+          <Row label={L("pp.row.ping", "PING")}>
             <span className={"pp-ping " + pingCls}>
               {ping != null ? `${Math.round(ping)} ms` : "—"}</span>
           </Row>
-          <Row label="STANCE">
-            <StanceIcon stance={stance} /><span className="pp-cap">{stance ?? "—"}</span>
+          <Row label={L("pp.row.stance", "STANCE")}>
+            <StanceIcon stance={stance} /><span className="pp-cap">{stance
+              ? (IS_ZZ && (stance === "standing" || stance === "crouched" || stance === "prone")
+                  ? t("pp.stance." + stance) : stance)
+              : "—"}</span>
           </Row>
           {life && life !== "healthy" && (
-            <Row label="STATUS">
+            <Row label={L("pp.row.status", "STATUS")}>
               <span className={"pp-cap " + (life === "incapacitated" ? "bad" : "warn")}>
                 {lifeLabel(life)}</span>
             </Row>
           )}
           {voice && (
-            <Row label="VOICE"><span className="pp-cap">{voiceLabel(voice)}</span></Row>
+            <Row label={L("pp.row.voice", "VOICE")}><span className="pp-cap">{voiceLabel(voice)}</span></Row>
           )}
           {s?.weapon && (
-            <Row label="WEAPON">
+            <Row label={L("pp.row.weapon", "WEAPON")}>
               <WeaponIcon /><b>{weaponDisplayName(s.weapon.className)}</b>
             </Row>
           )}
-          <Row label="ACTION">
+          <Row label={L("pp.row.action", "ACTION")}>
             <div className="pp-badges">
               {s?.classShort?.includes("DeveloperAdminCam") &&
-                <span className="pp-badge cam">ADMIN CAM</span>}
-              {isCmdr && <span className="pp-badge cmd">CMDR</span>}
-              {isSL && <span className="pp-badge sl">SL</span>}
-              {isAdmin && <span className="pp-badge adm">ADMIN</span>}
-              {p.isBot && <span className="pp-badge bot">BOT</span>}
+                <span className="pp-badge cam">{L("pp.badge.cam", "ADMIN CAM")}</span>}
+              {isCmdr && <span className="pp-badge cmd">{L("pp.badge.cmdr", "CMDR")}</span>}
+              {isSL && <span className="pp-badge sl">{L("pp.badge.sl", "SL")}</span>}
+              {isAdmin && <span className="pp-badge adm">{L("pp.badge.admin", "ADMIN")}</span>}
+              {p.isBot && <span className="pp-badge bot">{L("pp.badge.bot", "BOT")}</span>}
               <span className={"pp-badge " + (inSquad ? "sq" : "solo")}>
-                {inSquad ? "SQUAD" : "SOLO"}</span>
+                {inSquad ? L("pp.badge.squad", "SQUAD") : L("pp.badge.solo", "SOLO")}</span>
               {moving != null && (
                 <span className={"pp-badge " + (moving ? "mv" : "idle")}>
-                  {moving ? "MOVING" : "IDLE"}</span>
+                  {moving ? L("pp.badge.moving", "MOVING") : L("pp.badge.idle", "IDLE")}</span>
               )}
-              {life === "incapacitated" && <span className="pp-badge down">DOWNED</span>}
-              {life === "bleeding" && <span className="pp-badge bleed">BLEEDING</span>}
-              {life == null && downed && <span className="pp-badge down">DOWNED</span>}
+              {life === "incapacitated" && <span className="pp-badge down">{L("pp.badge.down", "DOWNED")}</span>}
+              {life === "bleeding" && <span className="pp-badge bleed">{L("pp.badge.bleeding", "BLEEDING")}</span>}
+              {life == null && downed && <span className="pp-badge down">{L("pp.badge.down", "DOWNED")}</span>}
             </div>
           </Row>
           {s?.weapon?.magazines && s.weapon.magazines.length > 0 && (
-            <Row label="AMMO">
+            <Row label={L("pp.row.ammo", "AMMO")}>
               <Mags mags={s.weapon.magazines}
                     slots={weaponStatic(s.weapon.className)?.maxMags} />
             </Row>
@@ -222,21 +232,21 @@ export function PlayerPanel() {
 
         {/* Stat chips — two rows */}
         <div className="pp-stats">
-          <Stat g="🎯" c="var(--good)" label="Kills" v={st(stats, "kills")} />
-          <Stat g="💀" c="var(--bad)" label="Deaths" v={st(stats, "deaths")} />
-          <Stat g="⚠" c="var(--bad)" label="Team Kills" v={st(stats, "teamKills")} />
-          <Stat g="🚗" label="Vehicle Kills" v={st(stats, "vehicleKills")} />
-          <Stat g="🩹" label="Wounds Taken" v={st(stats, "wounds")} />
+          <Stat g="🎯" c="var(--good)" label={L("pp.stat.kills", "Kills")} v={st(stats, "kills")} />
+          <Stat g="💀" c="var(--bad)" label={L("pp.stat.deaths", "Deaths")} v={st(stats, "deaths")} />
+          <Stat g="⚠" c="var(--bad)" label={L("pp.stat.teamKills", "Team Kills")} v={st(stats, "teamKills")} />
+          <Stat g="🚗" label={L("pp.stat.vehicleKills", "Vehicle Kills")} v={st(stats, "vehicleKills")} />
+          <Stat g="🩹" label={L("pp.stat.wounds", "Wounds Taken")} v={st(stats, "wounds")} />
         </div>
         <div className="pp-stats">
-          <Stat g="✚" c="var(--good)" label="Revive Pts" v={st(stats, "revivedPoints")} />
-          <Stat g="❤" c="var(--good)" label="Heal Pts" v={st(stats, "healPoints")} />
-          <Stat g="🚩" label="Objective" v={st(stats, "objectiveScore")} />
-          <Stat g="🤝" label="Teamwork" v={st(stats, "teamWorkScore")} />
+          <Stat g="✚" c="var(--good)" label={L("pp.stat.revive", "Revive Pts")} v={st(stats, "revivedPoints")} />
+          <Stat g="❤" c="var(--good)" label={L("pp.stat.heal", "Heal Pts")} v={st(stats, "healPoints")} />
+          <Stat g="🚩" label={L("pp.stat.objective", "Objective")} v={st(stats, "objectiveScore")} />
+          <Stat g="🤝" label={L("pp.stat.teamwork", "Teamwork")} v={st(stats, "teamWorkScore")} />
         </div>
 
         <div className="pp-foot">
-          <span className="pp-score">SCORE <b>{fmtInt(p.score)}</b></span>
+          <span className="pp-score">{L("pp.score", "SCORE")} <b>{fmtInt(p.score)}</b></span>
           {pos && (
             <span className="pp-pos">
               {Math.round(pos.x)}, {Math.round(pos.y)},{" "}
@@ -280,7 +290,9 @@ function Mags({ mags, slots }: { mags: number[]; slots?: number }) {
     const c = mags[i];
     const cls = c == null ? "empty" : c <= 0 ? "empty" : c >= full ? "full" : "part";
     cells.push(
-      <span key={i} className={"pp-mag " + cls} title={c != null ? `${c} rounds` : "empty"}>
+      <span key={i} className={"pp-mag " + cls} title={c != null
+        ? (IS_ZZ ? t("pp.mag.rounds", { n: c }) : `${c} rounds`)
+        : L("pp.mag.empty", "empty")}>
         <span className="pp-mag-fill" style={{
           height: c != null && full > 0 ? `${Math.min(100, (c / full) * 100)}%` : "0%",
         }} />

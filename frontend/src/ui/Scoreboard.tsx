@@ -12,6 +12,9 @@ import { factionFlagUrl, roleIconUrl } from "../canvas/icons";
 import { useViewerStore } from "../state/viewerStore";
 import type { Player, SquadState, TeamState } from "../state/types";
 import { playerKey } from "./PlayerPanel";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 interface SbStats {
   rev: number; heal: number; wnd: number;
@@ -145,7 +148,7 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
   // the game shows — the leading token — with the flag beside it.
   const rawFaction = teamState?.factionId ?? "";
   const shortFaction = (rawFaction.split("_")[0] || "").toUpperCase()
-    || `TEAM ${team}`;
+    || (IS_ZZ ? t("sb.team", { n: team }) : `TEAM ${team}`);
   const flagUrl = factionFlagUrl(rawFaction);
   const tickets = teamState?.tickets ?? null;
   const playerCount = teamState?.playerCount ?? players.length;
@@ -159,15 +162,16 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
         <div className="sb-banner-text">
           <div className="sb-faction" style={{ color: tc }}>{shortFaction}</div>
           <div className="sb-meta">
-            Tickets: <b>{tickets ?? "—"}</b>
+            {L("sb.tickets", "Tickets")}: <b>{tickets ?? "—"}</b>
             {" · "}
-            Players: <b>{playerCount}</b>
+            {L("sb.players", "Players")}: <b>{playerCount}</b>
           </div>
         </div>
       </div>
       <div className="sb-stat-row">
         {COLS.map((c) => (
-          <div key={c.key} className="sb-stat-cell" title={c.title}>
+          <div key={c.key} className="sb-stat-cell"
+               title={IS_ZZ ? t("sb.col." + c.key) : c.title}>
             <StatIcon col={c} />
             <span>{fmt(aggregate[c.key])}</span>
           </div>
@@ -175,7 +179,7 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
       </div>
       <div className="sb-body">
         {squadIds.length === 0 && (
-          <div className="sb-empty">no players on this team</div>
+          <div className="sb-empty">{L("sb.empty", "no players on this team")}</div>
         )}
         {squadIds.map((sid) => {
           const sqPlayers = grouped.get(sid)!;
@@ -208,8 +212,10 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
           const locked = squads.find(
             (q) => q.teamId === team && num(q.id) === sid)?.isLocked === true;
           const sqName = isUnassigned
-            ? `Unassigned (${sqPlayers.length})`
-            : (sqPlayers.find((p) => p.squadName)?.squadName ?? `Squad ${sid}`);
+            ? (IS_ZZ ? t("sb.unassigned", { n: sqPlayers.length })
+                     : `Unassigned (${sqPlayers.length})`)
+            : (sqPlayers.find((p) => p.squadName)?.squadName
+               ?? (IS_ZZ ? t("sb.squad", { n: sid }) : `Squad ${sid}`));
           return (
             <div key={sid} className={"sb-squad" + (isOpen ? " open" : "")}>
               <div className={"sb-squad-row" + (isUnassigned ? " sb-unassigned" : "")}
@@ -228,8 +234,8 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
                   {locked && (
                     <svg className="sb-lock" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" strokeWidth="2.4"
-                         role="img" aria-label="locked squad">
-                      <title>Locked — closed to new members</title>
+                         role="img" aria-label={L("sb.lockedAria", "locked squad")}>
+                      <title>{L("sb.lockedTitle", "Locked — closed to new members")}</title>
                       <rect x="5" y="11" width="14" height="9" rx="2" />
                       <path d="M8 11V8a4 4 0 018 0v3" />
                     </svg>
@@ -254,8 +260,9 @@ function TeamColumn({ team, teamState, players, squads, closed, toggleSquad, sel
                       <div key={playerKey(p)} className={"sb-row" + (dead ? " dead" : "")}
                            onClick={() => selectPlayer(playerKey(p))}>
                         <span className={"sb-badge " + badgeCls}
-                              title={isSL ? "Squad Leader" : isFTL
-                                ? "Fire Team Leader (estimated — no definitive backend flag)" : undefined}>
+                              title={isSL ? L("sb.sl", "Squad Leader") : isFTL
+                                ? L("sb.ftl", "Fire Team Leader (estimated — no definitive backend flag)")
+                                : undefined}>
                           {badge}</span>
                         <span className="sb-pname">
                           {roleUrl && <img className="sb-role" src={roleUrl} alt="" />}
@@ -312,9 +319,10 @@ export function Scoreboard() {
     }}>
       <div id="scoreboard">
         <header>
-          <span>Scoreboard</span>
-          <span className="sb-hint">Tab to close</span>
-          <button onClick={() => close(false)} title="close (Tab / Esc)">✕</button>
+          <span>{L("sb.title", "Scoreboard")}</span>
+          <span className="sb-hint">{L("sb.hint", "Tab to close")}</span>
+          <button onClick={() => close(false)}
+                  title={L("sb.close", "close (Tab / Esc)")}>✕</button>
         </header>
         <div className="sb-cols">
           <TeamColumn team={1} teamState={team1} players={p1} squads={squads}

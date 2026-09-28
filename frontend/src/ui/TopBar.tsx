@@ -8,6 +8,7 @@ import { ClipRecorder } from "./ClipRecorder";
 import { SettingsMenu } from "./SettingsMenu";
 import { IS_ZZ } from "../zz/build";
 import { backUrl, TR } from "../zz/mode";
+import { L } from "../zz/l";
 
 export function TopBar() {
   const status = useViewerStore((s) => s.status);
@@ -110,11 +111,13 @@ export function TopBar() {
             </span>
           )}
           <span className={"pill " + statusClass}>
-            {IS_ZZ ? "tekrar"
+            {IS_ZZ ? L("top.replay", "")
               : mode === "replay" ? "recording" : (STATUS_TR[status] ?? status)}
           </span></div>
-        <div>{IS_ZZ ? "kare" : "tick"} <b>{curSnap?.tick ?? "—"}</b>
-          {" · "}<span>{rate}</span>
+        <div>{L("top.frame", "tick")} <b>{curSnap?.tick ?? "—"}</b>
+          {/* Zero Zone: the "Hz" reading is the live feed's arrival rate, which
+              means nothing while replaying a stored match. */}
+          {!IS_ZZ && <>{" · "}<span>{rate}</span></>}
           {" · "}
           {/* Which match am I watching? The opaque match id used to be the only
               answer the player chrome gave — unreadable, unmemorable, and no
@@ -145,21 +148,20 @@ export function TopBar() {
             Past Matches
           </button>
         )}
-        <span>{IS_ZZ ? "yakınlık" : "zoom"} <b>{view.zoom.toFixed(1)}x</b></span>
+        <span>{L("top.zoom", "zoom")} <b>{view.zoom.toFixed(1)}x</b></span>
         <button onClick={() => resetView()}
-                title={IS_ZZ ? "görünümü sıfırla (F)" : "reset view (F)"}>
-          {IS_ZZ ? "Sığdır" : "Fit"}
+                title={L("top.fitTitle", "reset view (F)")}>
+          {L("top.fit", "Fit")}
         </button>
         <button onClick={() => toggleScoreboard()}
-                title={IS_ZZ ? "skor tablosu (Tab)" : "scoreboard (Tab)"}>
-          {IS_ZZ ? "skor" : "score"}
+                title={L("top.scoreTitle", "scoreboard (Tab)")}>
+          {L("top.score", "score")}
         </button>
         {mode === "replay" && (
           <button className={timelineVisible ? "on" : ""}
                   onClick={() => toggleTimeline()}
-                  title={IS_ZZ ? "bilet kaybı zaman çizelgesi (G)"
-                               : "ticket-loss timeline (G)"}>
-            {IS_ZZ ? "Biletler" : "Tickets"}
+                  title={L("top.ticketsTitle", "ticket-loss timeline (G)")}>
+            {L("top.tickets", "Tickets")}
           </button>
         )}
         <ClipRecorder />

@@ -8,6 +8,9 @@ import { useViewerStore } from "../state/viewerStore";
 import { teamColor } from "../canvas/draw";
 import { playerKey } from "./PlayerPanel";
 import type { Player } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 const MAX_RESULTS = 14;
 
@@ -76,15 +79,16 @@ export function PlayerSearch() {
                onChange={(e) => { setQ(e.target.value); setOpen(true); }}
                onFocus={() => setOpen(true)}
                onKeyDown={onKeyDown}
-               placeholder="Search players…" spellCheck={false} />
-        {q && <button className="ps-clear" title="Clear"
+               placeholder={L("search.placeholder", "Search players…")}
+               spellCheck={false} />
+        {q && <button className="ps-clear" title={L("search.clear", "Clear")}
                       onClick={() => setQ("")}>✕</button>}
       </label>
 
       {open && query && (
         <div className="ps-drop">
           {matches.length === 0 ? (
-            <div className="ps-empty">No matching players</div>
+            <div className="ps-empty">{L("search.empty", "No matching players")}</div>
           ) : (
             matches.map((p, i) => (
               <button key={playerKey(p)}
@@ -98,7 +102,9 @@ export function PlayerSearch() {
                   {p.name ?? "—"}
                 </span>
                 <span className="ps-sq">
-                  {p.squadName ?? (p.squadId ? `Team ${p.squadId}` : "No squad")}
+                  {p.squadName ?? (p.squadId
+                    ? (IS_ZZ ? t("search.squad", { n: p.squadId }) : `Team ${p.squadId}`)
+                    : L("search.noSquad", "No squad"))}
                 </span>
               </button>
             ))

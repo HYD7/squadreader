@@ -15,6 +15,9 @@ import {
   damageTypeCategoryLabel, deathCauseFromDamageType, deathCausePhrase,
 } from "../killfeed/diff";
 import type { KillFeedEntry } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { L, LEn } from "../zz/l";
+import { t } from "../zz/tr";
 
 function fmtGameTime(s: number | null) {
   if (s == null || !Number.isFinite(s) || s < 0) return "00:00";
@@ -41,7 +44,7 @@ function weaponLabel(e: KillFeedEntry): string {
     return weaponDisplayName(e.weaponClass);
   }
   const cat = damageTypeCategoryLabel(e.damageType);
-  if (cat) return cat;
+  if (cat) return LEn(cat);
   return "";
 }
 
@@ -89,8 +92,8 @@ function Row({ e, select }: RowProps) {
         <NameChip name={e.victim} team={e.victimTeam} roleId={e.victimRoleId}
                   onClick={() => select(e.victim)} />
         <VehicleChip cls={e.victimVehicleClass} />
-        <span className="kf-world-phrase" title={worldCause.title}>
-          {deathCausePhrase(e.damageType)}
+        <span className="kf-world-phrase" title={LEn(worldCause.title)}>
+          {LEn(deathCausePhrase(e.damageType))}
         </span>
       </div>
     );
@@ -98,23 +101,29 @@ function Row({ e, select }: RowProps) {
 
   const wLabel = weaponLabel(e);
   return (
-    <div className={rowCls} title={e.wounded ? "Wounded (incap)" : undefined}>
+    <div className={rowCls}
+         title={e.wounded ? L("kf.wounded", "Wounded (incap)") : undefined}>
       <span className="kf-time">{time}</span>
       {e.killer
         ? <NameChip name={e.killer} team={e.killerTeam} roleId={e.killerRoleId}
                     onClick={() => select(e.killer)} />
         : <span className="kf-name kf-name-mute">
-            {e.suicide ? "Suicide" : "?"}
+            {e.suicide ? L("kf.suicide", "Suicide") : "?"}
           </span>}
       <VehicleChip cls={e.killerVehicleClass} />
       <span className="kf-weapon">
         {wLabel && <span className="kf-weapon-label"
-          title={e.weaponApprox ? "approximate — this player's last seen weapon, may not be the killing weapon" : undefined}>
+          title={e.weaponApprox
+            ? L("kf.approx", "approximate — this player's last seen weapon, may not be the killing weapon")
+            : undefined}>
           {wLabel}{e.weaponApprox ? " ?" : ""}</span>}
         {e.hitDistance != null && (
-          <span className="kf-dist">{Math.round(e.hitDistance)} m</span>
+          <span className="kf-dist">{IS_ZZ
+            ? t("kf.dist", { n: Math.round(e.hitDistance) })
+            : `${Math.round(e.hitDistance)} m`}</span>
         )}
-        {e.headshot && <span className="kf-hs" title="Headshot">HS</span>}
+        {e.headshot && <span className="kf-hs" title={L("kf.headshot", "Headshot")}>
+          {L("kf.hs", "HS")}</span>}
         <span className="kf-arrow">›</span>
       </span>
       <NameChip name={e.victim} team={e.victimTeam} roleId={e.victimRoleId}
@@ -151,16 +160,16 @@ export function KillFeed() {
 
   return (
     <div id="killfeed" className={visible ? "kf-open" : "kf-collapsed"}>
-      <header onClick={toggle} title="Show / hide">
-        <span>Kills</span>
+      <header onClick={toggle} title={L("kf.toggle", "Show / hide")}>
+        <span>{L("kf.title", "Kills")}</span>
         <span className="kf-count">{entries.length}</span>
         <button className="kf-clear" onClick={(e) => { e.stopPropagation(); clear(); }}
-                title="Clear">⨯</button>
+                title={L("kf.clear", "Clear")}>⨯</button>
       </header>
       {visible && (
         <div className="kf-body">
           {entries.length === 0 && (
-            <div className="kf-empty">No kills yet</div>
+            <div className="kf-empty">{L("kf.empty", "No kills yet")}</div>
           )}
           {entries.map((e) => <Row key={e.id} e={e} select={select} />)}
         </div>

@@ -7,17 +7,20 @@
 
 import { useViewerStore } from "../state/viewerStore";
 import type { TeamState } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t, tState, type TrKey } from "../zz/tr";
 
 type Kind = "prep" | "post";
-const PHASES: Record<string, { title: string; kind: Kind }> = {
-  EnteringMap:      { title: "Loading Map",           kind: "prep" },
-  WaitingToStart:   { title: "Preparing for Match",   kind: "prep" },
-  Warmup:           { title: "Warmup",                kind: "prep" },
-  WaitingPostMatch: { title: "Match Over",            kind: "post" },
-  PostMatch:        { title: "Match Over",            kind: "post" },
-  EndState:         { title: "Match Over",            kind: "post" },
-  LeavingMap:       { title: "Changing Map",          kind: "post" },
-  Aborted:          { title: "Match Cancelled",       kind: "post" },
+const PHASES: Record<string, { title: string; kind: Kind; key: TrKey }> = {
+  EnteringMap:      { title: "Loading Map",           kind: "prep", key: "phase.EnteringMap" },
+  WaitingToStart:   { title: "Preparing for Match",   kind: "prep", key: "phase.WaitingToStart" },
+  Warmup:           { title: "Warmup",                kind: "prep", key: "phase.Warmup" },
+  WaitingPostMatch: { title: "Match Over",            kind: "post", key: "phase.over" },
+  PostMatch:        { title: "Match Over",            kind: "post", key: "phase.over" },
+  EndState:         { title: "Match Over",            kind: "post", key: "phase.over" },
+  LeavingMap:       { title: "Changing Map",          kind: "post", key: "phase.LeavingMap" },
+  Aborted:          { title: "Match Cancelled",       kind: "post", key: "phase.Aborted" },
 };
 
 function shortFaction(id: string | null | undefined): string {
@@ -44,7 +47,8 @@ export function MatchOverlay() {
     return null;
   }
 
-  const phase = PHASES[state] ?? { title: "Match Transition", kind: "prep" as Kind };
+  const phase = PHASES[state]
+    ?? { title: "Match Transition", kind: "prep" as Kind, key: "phase.other" as TrKey };
   // Post-match result: show the tickets frozen at the last InProgress tick (the
   // win-instant values). Squad keeps bleeding the winner's Tickets field a few
   // points into WaitingPostMatch, so live reads drift below the game's final
@@ -66,8 +70,8 @@ export function MatchOverlay() {
   return (
     <div className={"match-overlay mo-" + phase.kind}>
       <div className="mo-card">
-        <div className="mo-eyebrow">{state}</div>
-        <div className="mo-title">{phase.title}</div>
+        <div className="mo-eyebrow">{IS_ZZ ? tState(state) : state}</div>
+        <div className="mo-title">{IS_ZZ ? t(phase.key) : phase.title}</div>
 
         {phase.kind === "post" ? (
           <div className="mo-result">
@@ -78,7 +82,7 @@ export function MatchOverlay() {
         ) : (
           nextLine && (
             <div className="mo-next">
-              <span className="mo-next-lbl">Next</span>
+              <span className="mo-next-lbl">{L("mo.next", "Next")}</span>
               <span className="mo-next-map">{nextLine}</span>
             </div>
           )
@@ -86,8 +90,8 @@ export function MatchOverlay() {
 
         <div className="mo-sub">
           {phase.kind === "post"
-            ? "New match starting soon…"
-            : "Players deploying soon…"}
+            ? L("mo.subPost", "New match starting soon…")
+            : L("mo.subPrep", "Players deploying soon…")}
         </div>
         <div className="mo-dots"><span /><span /><span /></div>
       </div>
@@ -102,10 +106,10 @@ function TeamResult({ team, align, win }: {
   return (
     <div className={"mo-team mo-" + align + (win ? " mo-win" : "")}
          style={{ ["--tc" as string]: `var(--team${id})` }}>
-      {win && <div className="mo-crown">WINNER</div>}
+      {win && <div className="mo-crown">{L("mo.winner", "WINNER")}</div>}
       <div className="mo-faction">{shortFaction(team?.factionId)}</div>
       <div className="mo-tickets">{team?.tickets ?? "—"}</div>
-      <div className="mo-tlabel">ticket</div>
+      <div className="mo-tlabel">{L("mo.ticket", "ticket")}</div>
     </div>
   );
 }

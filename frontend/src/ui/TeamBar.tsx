@@ -5,6 +5,8 @@
 
 import { useViewerStore } from "../state/viewerStore";
 import type { TeamState } from "../state/types";
+import { IS_ZZ } from "../zz/build";
+import { tState } from "../zz/tr";
 
 function fmtClock(sec: number | null | undefined): string {
   if (sec == null || sec < 0) return "—";
@@ -61,7 +63,8 @@ export function TeamBar() {
       <div className="tb-centre">
         <div className="tb-map">{mapLine}</div>
         <div className="tb-clock">{fmtClock(gs?.elapsedSec)}
-          {state && <span className={"tb-state " + (live ? "on" : "")}>{state}</span>}
+          {state && <span className={"tb-state " + (live ? "on" : "")}>
+            {IS_ZZ ? tState(state) : state}</span>}
         </div>
         <div className="tb-ticketbar">
           <div className="tb-tb-fill tb-tb-1" style={{ width: `${pct1}%` }} />

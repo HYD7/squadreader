@@ -8,6 +8,9 @@ import { useViewerStore } from "../state/viewerStore";
 import { teamColor } from "../canvas/draw";
 import { computeTicketAnalysis } from "../state/ticketTimeline";
 import type { LossEvent, TeamTimeline } from "../state/ticketTimeline";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t, tLossLabel } from "../zz/tr";
 
 const VBH = 260;                       // graph height (px, 1:1 with viewBox)
 const PADL = 46, PADR = 16, PADT = 12, PADB = 28;
@@ -86,8 +89,9 @@ export function TicketTimeline() {
 
   const fac1 = shortFaction(frames[0]?.teams?.find((t) => t.id === 1)?.factionId);
   const fac2 = shortFaction(frames[0]?.teams?.find((t) => t.id === 2)?.factionId);
-  const label1 = fac1 ?? "Team 1";
-  const label2 = fac2 ?? "Team 2";
+  const label1 = fac1 ?? (IS_ZZ ? t("tt.team", { n: 1 }) : "Team 1");
+  const label2 = fac2 ?? (IS_ZZ ? t("tt.team", { n: 2 }) : "Team 2");
+  const lossLabel = (e: LossEvent) => IS_ZZ ? tLossLabel(e) : e.label;
 
   const seekTo = (frameIdx: number) => {
     setReplay((r) => ({ ...r, currentIdx: Math.max(0, Math.min(frames.length - 1, frameIdx)),
@@ -117,7 +121,7 @@ export function TicketTimeline() {
 
   const showTip = (ev: LossEvent, dom: React.MouseEvent) =>
     setHover({ x: dom.clientX, y: dom.clientY,
-      text: `${ev.team === 1 ? label1 : label2} — ${ev.label}  −${ev.amount}  @${mmss(ev.tickTimeSec)}` });
+      text: `${ev.team === 1 ? label1 : label2} — ${lossLabel(ev)}  −${ev.amount}  @${mmss(ev.tickTimeSec)}` });
 
   const ready = analysis && geo;
   const vehEvents = analysis ? analysis.events.filter((e) => e.cause === "vehicle") : [];
@@ -138,22 +142,23 @@ export function TicketTimeline() {
     <div id="tt-overlay" onClick={(e) => { if (e.target === e.currentTarget) close(false); }}>
       <div id="ticket-timeline">
         <header>
-          <span className="tt-title">Ticket Timeline</span>
+          <span className="tt-title">{L("tt.title", "Ticket Timeline")}</span>
           <span className="tt-legend">
             <i style={{ background: teamColor(1) }} />{label1}
             <i style={{ background: teamColor(2) }} />{label2}
-            <b>▲</b>&nbsp;vehicle
+            <b>▲</b>&nbsp;{L("tt.vehicle", "vehicle")}
           </span>
           <span className="tt-note"
-                title="The lines and per-team totals are exact ground truth. Splitting each loss into death / vehicle / bleed is a best-effort estimate.">
-            totals exact · causes estimated
+                title={L("tt.noteTitle", "The lines and per-team totals are exact ground truth. Splitting each loss into death / vehicle / bleed is a best-effort estimate.")}>
+            {L("tt.note", "totals exact · causes estimated")}
           </span>
-          <button className="tt-close" onClick={() => close(false)} title="close (G / Esc)">✕</button>
+          <button className="tt-close" onClick={() => close(false)}
+                  title={L("tt.close", "close (G / Esc)")}>✕</button>
         </header>
 
         <div className="tt-graph-wrap" ref={wrapRef}>
           {!ready ? (
-            <div className="tt-empty">Not enough ticket data in this recording.</div>
+            <div className="tt-empty">{L("tt.empty", "Not enough ticket data in this recording.")}</div>
           ) : (
             <svg ref={svgRef} className="tt-graph" width={w} height={VBH}
                  viewBox={`0 0 ${w} ${VBH}`} onClick={onGraphClick}>
@@ -199,24 +204,26 @@ export function TicketTimeline() {
                   {t.team === 1 ? label1 : label2}
                 </span>
                 <span className="tt-bk-cells">
-                  <b>{t.breakdown.total}</b> lost
-                  <span className="tt-bk-sep">·</span>Deaths {t.breakdown.death}
-                  <span className="tt-bk-sep">·</span>Vehicles {t.breakdown.vehicle}
-                  <span className="tt-bk-sep">·</span>Bleed {t.breakdown.bleed}
+                  <b>{t.breakdown.total}</b> {L("tt.lost", "lost")}
+                  <span className="tt-bk-sep">·</span>{L("tt.deaths", "Deaths")} {t.breakdown.death}
+                  <span className="tt-bk-sep">·</span>{L("tt.vehicles", "Vehicles")} {t.breakdown.vehicle}
+                  <span className="tt-bk-sep">·</span>{L("tt.bleed", "Bleed")} {t.breakdown.bleed}
                 </span>
               </div>
             ))}
           </div>
 
           <div className="tt-events">
-            <div className="tt-events-head">Vehicle losses ({vehEvents.length})</div>
+            <div className="tt-events-head">{IS_ZZ
+              ? t("tt.vehLosses", { n: vehEvents.length })
+              : `Vehicle losses (${vehEvents.length})`}</div>
             <div className="tt-events-list">
-              {vehEvents.length === 0 && <div className="tt-empty2">No vehicles destroyed.</div>}
+              {vehEvents.length === 0 && <div className="tt-empty2">{L("tt.noVeh", "No vehicles destroyed.")}</div>}
               {vehEvents.map((e, k) => (
                 <button key={k} className="tt-ev-row" onClick={() => seekTo(e.frameIdx)}>
                   <span className="tt-ev-time">{mmss(e.tickTimeSec)}</span>
                   <i className="tt-ev-dot" style={{ background: teamColor(e.team) }} />
-                  <span className="tt-ev-label">{e.detail ?? e.label}</span>
+                  <span className="tt-ev-label">{e.detail ?? lossLabel(e)}</span>
                   <span className="tt-ev-amt">−{e.amount}</span>
                 </button>
               ))}

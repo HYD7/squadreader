@@ -7,11 +7,20 @@ import { useViewerStore } from "../state/viewerStore";
 import type { Snapshot } from "../state/types";
 import { vehicleDisplayName } from "../data/vehicleDisplayNames";
 import { markerLabel, findPlacer, ftLabel, fmtInt } from "./entityInfo";
+import { IS_ZZ } from "../zz/build";
+import { L } from "../zz/l";
+import { t } from "../zz/tr";
 
 interface Props { hit: Hit | null; x: number; y: number; }
 
 function dot(t: number | null | undefined) {
   return <span className="swatch" style={{ background: teamColor(t) }} />;
+}
+
+// Turkish stance name; unknown values pass through unchanged.
+function stanceTr(s: string): string {
+  return s === "standing" || s === "crouched" || s === "prone"
+    ? t("pp.stance." + s) : s;
 }
 
 function body(hit: Hit, snap: Snapshot | null) {
@@ -23,8 +32,10 @@ function body(hit: Hit, snap: Snapshot | null) {
         {dot(e.teamId)}<b>{e.name ?? "?"}</b>
         {e.clanTag && <span style={{ opacity: .6 }}> [{e.clanTag}]</span>}
         <br />{e.roleId ?? "—"}
-        {e.squadId ? ` · sq ${e.squadId}` : ""}
-        <br />HP {fmtInt(s?.health)} · {s?.stance ?? "standing"}
+        {e.squadId ? ` · ${L("tip.squadShort", "sq")} ${e.squadId}` : ""}
+        <br />HP {fmtInt(s?.health)} · {s?.stance
+          ? (IS_ZZ ? stanceTr(s.stance) : s.stance)
+          : L("tip.standing", "standing")}
         {s?.classShort && <><br /><span style={{ opacity: .6 }}>{s.classShort}</span></>}
       </>;
     }
@@ -34,12 +45,16 @@ function body(hit: Hit, snap: Snapshot | null) {
       return <>
         {dot(e.team)}<b>{vehicleDisplayName(e.classShort)}</b>
         <br />HP {fmtInt(e.health)} / {fmtInt(e.maxHealth)}
-        {e.attached && <><br /><span style={{ opacity: .6 }}>attached</span></>}
-        {e.lastDamager && <><br />last hit by {e.lastDamager.name ?? "?"}</>}
+        {e.attached && <><br /><span style={{ opacity: .6 }}>
+          {L("tip.attached", "attached")}</span></>}
+        {e.lastDamager && <><br />{IS_ZZ
+          ? t("tip.lastHit", { name: e.lastDamager.name ?? "?" })
+          : `last hit by ${e.lastDamager.name ?? "?"}`}</>}
         {passengers.length > 0 && (
           <>
             <br /><span style={{ opacity: .6 }}>
-              passengers ({passengers.length}):
+              {IS_ZZ ? t("tip.passengers", { n: passengers.length })
+                     : `passengers (${passengers.length}):`}
             </span>
             {passengers.map((p) => (
               <div key={p.eosId ?? p.name ?? Math.random()}
@@ -58,10 +73,11 @@ function body(hit: Hit, snap: Snapshot | null) {
       const e = hit.hit.e;
       return <>
         <b>{e.name ?? "?"}</b>
-        <br />owner {dot(e.owningTeam)}team {e.owningTeam ?? "—"}
-        {e.capturingTeam && <><br />capping {dot(e.capturingTeam)}team {e.capturingTeam}</>}
-        <br />cap {e.capturePercent != null ? (e.capturePercent * 100).toFixed(0) + "%" : "—"}
-        {e.isLocked && <><br /><span style={{ opacity: .6 }}>locked</span></>}
+        <br />{L("tip.owner", "owner")} {dot(e.owningTeam)}{L("tip.team", "team")} {e.owningTeam ?? "—"}
+        {e.capturingTeam && <><br />{L("tip.capping", "capping")} {dot(e.capturingTeam)}{L("tip.team", "team")} {e.capturingTeam}</>}
+        <br />{L("tip.cap", "cap")} {e.capturePercent != null ? (e.capturePercent * 100).toFixed(0) + "%" : "—"}
+        {e.isLocked && <><br /><span style={{ opacity: .6 }}>
+          {L("tip.locked", "locked")}</span></>}
       </>;
     }
     case "deployable": {
@@ -70,7 +86,7 @@ function body(hit: Hit, snap: Snapshot | null) {
         {dot(e.team)}<b>{e.classShort ?? "?"}</b>
         {e.isFob && <span style={{ opacity: .6 }}> FOB</span>}
         <br />HP {fmtInt(e.health)} / {fmtInt(e.maxHealth)}
-        <br />built {e.buildState ?? "—"}
+        <br />{L("tip.built", "built")} {e.buildState ?? "—"}
       </>;
     }
     case "spawner": {
@@ -80,7 +96,7 @@ function body(hit: Hit, snap: Snapshot | null) {
       const label = vehicleDisplayName(e.vehicleClass ?? e.classShort);
       return <>
         {dot(e.team)}<b>{label}</b>
-        <br />{e.spawnerEnabled ? "ready" : "disabled"}
+        <br />{e.spawnerEnabled ? L("tip.ready", "ready") : L("tip.disabled", "disabled")}
         {e.actorName && <><br /><span style={{ opacity: .6 }}>{e.actorName}</span></>}
       </>;
     }
@@ -90,23 +106,25 @@ function body(hit: Hit, snap: Snapshot | null) {
       const role = ftLabel(e.fireTeamId);
       return <>
         {dot(e.team)}<b>{markerLabel(e.type)}</b>
-        {e.squad != null && <><br />Squad {e.squad} · {role}</>}
+        {e.squad != null && <><br />{L("tip.squad", "Squad")} {e.squad} · {role}</>}
         <br />
         {placer ? (
-          <>Placed by: <b>{placer.name ?? "?"}</b>{placer.clanTag
+          <>{L("tip.placedBy", "Placed by:")} <b>{placer.name ?? "?"}</b>{placer.clanTag
             ? <span style={{ opacity: .6 }}> [{placer.clanTag}]</span>
             : null}</>
         ) : (
-          <span style={{ opacity: .55 }}>Placer: (offline / unresolved)</span>
+          <span style={{ opacity: .55 }}>
+            {L("tip.placerUnknown", "Placer: (offline / unresolved)")}</span>
         )}
       </>;
     }
     case "projectile": {
       const e = hit.hit.e;
       return <>
-        <b>{e.classShort ?? "projectile"}</b>
-        {e.explosiveBaseDamage != null && <><br />dmg {fmtInt(e.explosiveBaseDamage)}</>}
-        {e.hasImpacted && <><br /><span style={{ opacity: .6 }}>impacted</span></>}
+        <b>{e.classShort ?? L("tip.projectile", "projectile")}</b>
+        {e.explosiveBaseDamage != null && <><br />{L("tip.dmg", "dmg")} {fmtInt(e.explosiveBaseDamage)}</>}
+        {e.hasImpacted && <><br /><span style={{ opacity: .6 }}>
+          {L("tip.impacted", "impacted")}</span></>}
       </>;
     }
   }

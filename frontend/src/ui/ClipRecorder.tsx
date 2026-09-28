@@ -5,6 +5,7 @@
 // need the Discord/RCON surface this project deliberately doesn't have.)
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { L } from "../zz/l";
 
 // VP9 first (smaller, better), VP8 as the broad fallback. Whichever the
 // browser actually supports wins; null means the browser can't record webm.
@@ -100,11 +101,12 @@ export function ClipRecorder() {
   return (
     <button className={recording ? "clip-rec active" : "clip-rec"}
             onClick={recording ? stop : start}
-            title={recording ? "Stop recording and download" : "Save map as WebM"}>
+            title={recording ? L("clip.stop", "Stop recording and download")
+                             : L("clip.start", "Save map as WebM")}>
       <span className={recording ? "clip-dot rec" : "clip-dot"} />
       {recording
         ? `${Math.floor(elapsed / 60)}:${twoDigit(elapsed % 60)}`
-        : "Clip"}
+        : L("clip.label", "Clip")}
     </button>
   );
 }
