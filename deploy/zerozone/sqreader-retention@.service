@@ -1,0 +1,69 @@
+# Zero Zone dağıtımı: kayıt saklama (retention), örnek başına. Örnek adı = oyun portu.
+#
+# UYARI: bu iş kayıt (.sqrx + .meta.json) dosyalarını SİLER. Export API açıkken
+# (bu dağıtımda açık) retention YALNIZ Zero Zone'un onayladığı (POST /export/v1/ack)
+# kayıtları yaş/boyut kuralıyla siler; onaylanmamış kayıt yalnız disk ACİL
+# durumunda (boş alan --min-free-gb altına inince) en eskiden silinir ve denetim
+# günlüğüne yazılır (sqreader/export_state.py başlık açıklaması, çalışma ağacında).
+# Zero Zone henüz ack göndermiyorsa yaş kuralı HİÇBİR ŞEY silmez: bu güvenli
+# yöndür ama disk dolabilir; KURULUM-TR.md bölüm 13. Aktif kayıt (son
+# --in-progress-min dakikada değişen) ve en yeni --min-keep kayıt korunur.
+# Zamanlayıcıyı etkinleştirmeden önce KURULUM-TR.md bölüm 13'teki
+# `sqreader retention --dry-run` komutuyla neyin silineceğine bakın.
+#
+# DOĞRULANMADI: retention ayar adları SON SÜRÜMDE doğrulanmalı. Aşağıdaki seçenekler
+# (--max-age-days, --min-free-gb, --min-keep) `sqreader/cli.py` build_parser'daki
+# `retention` alt komutunda bugün vardır; komut paralel görevle değişiyor
+# (yeni: --require-ack, --state-dir, config retention_* anahtarları). Sayılar
+# yer tutucudur (kodun kendi varsayılanlarıyla aynı), ÖLÇÜLMEDİ.
+# systemd-analyze verify: çalıştırılmadı (Linux host gerekli).
+
+[Unit]
+Description=SquadReader kayıt saklama (retention) - oyun portu %i
+ConditionPathIsDirectory=/var/lib/sqreader/%i/recordings
+
+[Service]
+Type=oneshot
+User=sqreader
+Group=sqreader
+Environment=SQREADER_CONFIG=/etc/sqreader/%i.config.json
+Environment=SQREADER_NET_POLICY=local-only
+Environment=HOME=/var/lib/sqreader/%i
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/sqreader/venv/bin/sqreader retention \
+    --recordings-dir /var/lib/sqreader/%i/recordings \
+    --max-age-days 90 \
+    --min-free-gb 5 \
+    --min-keep 3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqreader-retention-%i
+
+# Yetenek yok: yalnız kendi veri dizinine yazar.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# Kayıt dizini + durum dosyaları (retention_state.json, export_audit.log: veri dizini).
+ReadWritePaths=/var/lib/sqreader/%i
+UMask=0027
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+# Oyun sunucusunu etkilememeli (ölçülmedi).
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=25%

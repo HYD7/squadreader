@@ -551,6 +551,25 @@ def _handle_snap(
         if not have_name and len(filename_buffer) < _FILENAME_BUFFER_LIMIT:
             return  # keep buffering
         state_box["open_stall_ticks"] = 0
+        # Recording gate (export_state.RecordingGate): the operator switched
+        # recording off, or the disk is nearly full. Consulted ONLY here, when a
+        # NEW file would be opened: a recording that is already open is never
+        # cut, and the stats store (fed separately) is not affected at all.
+        gate = state_box.get("record_gate")
+        if gate is not None and match_id is not None:
+            try:
+                deny = gate()
+            except Exception as e:  # noqa: BLE001 - a gate bug must not stop recording
+                log.warning("recording gate failed (%r); recording anyway", e)
+                deny = None
+            if deny:
+                if state_box.get("record_denied") != (match_id, deny):
+                    state_box["record_denied"] = (match_id, deny)
+                    log.warning("recording: match %s NOT recorded (%s); stats "
+                                "collection continues", match_id, deny)
+                filename_buffer.clear()
+                return
+            state_box["record_denied"] = None
         if match_id is None:
             # Unreachable today: the early returns above only let an active
             # match through, and `is_active` requires a non-empty id. Kept as a

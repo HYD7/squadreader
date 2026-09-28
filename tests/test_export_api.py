@@ -289,9 +289,13 @@ def test_info_reader_state_and_unknowns(fx):
 
 def test_health(fx, srv_a, srv_b):
     a = get_json(srv_a, "/export/v1/health")
-    assert a == {"schema": "sqr-export-1", "ok": True, "readerState": "unknown",
-                 "lastFinalizedAt": 1788286190, "statsDbReadable": True,
-                 "recordingsDirReadable": True}
+    # the original fields keep their values; the control / disk / retention /
+    # target fields added later are covered by tests/test_export_control.py
+    assert {k: a[k] for k in ("schema", "ok", "readerState", "lastFinalizedAt",
+                              "statsDbReadable", "recordingsDirReadable")} == {
+        "schema": "sqr-export-1", "ok": True, "readerState": "unknown",
+        "lastFinalizedAt": 1788286190, "statsDbReadable": True,
+        "recordingsDirReadable": True}
     assert get_json(srv_b, "/export/v1/health")["lastFinalizedAt"] == 1788286190
 
 

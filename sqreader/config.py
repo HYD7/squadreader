@@ -60,6 +60,15 @@ DEFAULTS: dict[str, Any] = {
     # the agent derives a stable id for those servers instead. Inert on licensed
     # servers, which always supply their own. See sqreader/synth_match.py.
     "synthetic_match_ids": True,
+    # Outbound network policy (sqreader/netpolicy.py). "local-only" (default):
+    # only loopback / private ranges / hosts listed verbatim in net_allow_hosts
+    # may be contacted; no central platform, no update server, no chat webhook
+    # on the public internet. "allow-central" restores the upstream behaviour
+    # (enroll / push / check-in / offset packs / self-update) and must be chosen
+    # explicitly. The SQREADER_NET_POLICY / SQREADER_NET_ALLOW_HOSTS environment
+    # variables win over these keys.
+    "net_policy": "local-only",
+    "net_allow_hosts": [],
     # --- optional central push (OFF by default; opt-in via `sqreader enroll`) ---
     # If set + the box is enrolled (see agent_creds/.env.agent), finished-match
     # stats + .sqrx replays are pushed to this central. NON-SECRET keys only —
@@ -80,23 +89,21 @@ DEFAULTS: dict[str, Any] = {
     # (self-heal). Verified (Ed25519) → applied → re-checked with doctor → rolled
     # back if it doesn't clear the drift. Only ever active on an enrolled,
     # push-enabled box. Set false to require manual offset updates.
-    "offset_autoheal": True,
+    "offset_autoheal": False,
     # Fetch + verify + apply signed agent code releases (self-update).
     #
-    # ON by default, but that default can only ever fire on a box that is
-    # ENROLLED and pushing: the check lives inside the fleet check-in, which
-    # only runs when a central is configured and reachable. A self-hosted
-    # install has no central to fetch from, so the flag is inert there — and
-    # remote update is precisely what an operator gets by using squadreader.com
-    # instead of running their own. Set false to pin the binary and upgrade by
-    # hand.
+    # OFF by default in this fork (no runtime dependency on an external
+    # service): the check lives inside the fleet check-in, which only runs on an
+    # ENROLLED box that is pushing to a central, and the network policy keeps
+    # that shut in local mode anyway. Turn it on only together with
+    # net_policy=allow-central. Upgrade by hand otherwise.
     #
     # The running reader still never overwrites itself. It stages the verified
     # artifact, waits for a moment with no match in progress, and exits;
     # systemd's ExecStartPre runs `sqreader apply-staged-update`, which does the
     # swap between the two processes and rolls back if the new binary will not
     # boot. See sqreader/updater.py.
-    "update_enabled": True,
+    "update_enabled": False,
 
     # Path to plugins_config.json, for deployments whose start command is not
     # ours to edit - a container entrypoint baked into an image, a unit file
@@ -125,6 +132,36 @@ DEFAULTS: dict[str, Any] = {
     # `serve --export-token-file` wins over this. The token itself never goes
     # in this config file.
     "export_token_file": None,
+    # Directory of export_state.json / export_audit.log / retention_state.json
+    # (the recording switch, the acks, the audit trail). None = the parent of the
+    # recordings directory.
+    "export_state_dir": None,
+
+    # --- recording retention + disk quota (sqreader retention, and the recorder's
+    # low-disk guard). 0 switches a limit off. Only FINALIZED recordings that the
+    # export consumer has ACKNOWLEDGED (POST /export/v1/ack) are removed by the
+    # age / size rules; an un-acked one is removed only in a disk EMERGENCY (free
+    # space below retention_min_free_gb) and every such removal is logged and
+    # audited. The active recording and any recording that is not finalized are
+    # never touched (unverified ones only on request, see below).
+    "retention_max_age_days": 90,
+    "retention_max_total_gb": 150,
+    # Free-space floor of the recordings filesystem. Below it: retention removes
+    # the oldest recordings (acked first), and if that frees nothing the recorder
+    # opens NO new recording (health: recordingEnabledReason=disk_low). Stats
+    # collection and the game server are unaffected.
+    "retention_min_free_gb": 5,
+    # Never delete a file modified in the last N minutes / the newest N finalized
+    # recordings on the free-space rule.
+    "retention_in_progress_min": 60,
+    "retention_min_keep": 3,
+    # null = require an ack exactly when the Export API is on (export_token_file
+    # set); true / false force it.
+    "retention_require_ack": None,
+    # Unverified / legacy recordings (never proven finalized) are removed only when
+    # this is true AND they are older than retention_unverified_max_age_days.
+    "retention_include_unverified": False,
+    "retention_unverified_max_age_days": 180,
 }
 
 _cache: dict[str, Any] | None = None

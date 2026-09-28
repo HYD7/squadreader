@@ -450,8 +450,11 @@ def _make_handler(
             if export_api is None:
                 self.send_error(404, "no such endpoint")
                 return
+            extra: dict[str, Any] = {}
+            if method == "POST":
+                extra = self._export_post_input()
             res = export_api.handle(method, self.path,
-                                    self.headers.get("Authorization"))
+                                    self.headers.get("Authorization"), **extra)
             head = method == "HEAD"
             if res.recording is not None:
                 self._stream_recording(
@@ -466,6 +469,39 @@ def _make_handler(
             self.end_headers()
             if not head:
                 self.wfile.write(res.body)
+
+        def _export_post_input(self) -> dict[str, Any]:
+            """What a POST to the Export API needs from the transport: the
+            content type, the declared length, the peer address and -- only when
+            the declared length is sane -- the body itself. The Export API
+            decides what to answer; a body it would refuse for its size is never
+            read, and the connection is closed instead of being kept alive over
+            unread bytes."""
+            limit = int(getattr(export_api, "max_body_bytes", 4096))
+            raw = self.headers.get("Content-Length")
+            length: Optional[int] = None
+            if (self.headers.get("Transfer-Encoding") is None and raw is not None
+                    and raw.isascii() and raw.isdigit() and len(raw) <= 9):
+                length = int(raw)
+            body: Optional[bytes] = None
+            if length is not None and length <= limit:
+                try:
+                    self.connection.settimeout(10.0)
+                    body = self.rfile.read(length)
+                except OSError:                 # includes a read timeout
+                    body = None
+            elif length is not None and length <= 16 * limit:
+                # Too big to use, small enough to swallow: the client then
+                # reads the 413 instead of a connection reset.
+                try:
+                    self.connection.settimeout(10.0)
+                    self.rfile.read(length)
+                except OSError:
+                    pass
+            if body is None:
+                self.close_connection = True
+            return {"body": body, "content_type": self.headers.get("Content-Type"),
+                    "content_length": length, "client_ip": self.client_address[0]}
 
         def _other_method(self) -> None:
             path = self.path.split("?", 1)[0]

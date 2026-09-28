@@ -1,0 +1,130 @@
+# Zero Zone dağıtımı: SquadReader Export API için nginx örneği.
+#
+# ÖNERİLEN YOL SIRASI
+#  (1) WireGuard / özel ağ: Zero Zone web sunucusu reader'a özel ağ adresinden
+#      doğrudan ulaşır. nginx GEREKMEZ; TLS gerekmez (tünel şifreli). Bu dosya
+#      gerekmez. Dikkat: reader'ın HTTP portunda /export/v1/ DIŞINDA kimlik
+#      doğrulamasız yollar da vardır (/api/*, /health...). Bu yüzden reader
+#      127.0.0.1'e bağlı kalır ve özel ağ tarafını nginx (aşağıdaki (2) ya da
+#      yalnız WireGuard IP'sinde dinleyen sürümü) karşılar; reader'ın portunu
+#      doğrudan özel arayüze AÇMAYIN. (KURULUM-TR.md bölüm 10.)
+#  (2) TLS sonlandıran nginx + IP izin listesi (bu dosya). Zero Zone farklı
+#      makinedeyse (Windows VDS) ve WireGuard yoksa.
+#
+# Bu dosya ÖRNEKTİR: gerçek alan adı, IP ve sertifika yolu YOKTUR; <...> yer
+# tutucuları doldurulmadan `nginx -t` geçmez. DOĞRULANMADI: `nginx -t` bu
+# makinede çalıştırılmadı (Linux host gerekli).
+#
+# Mevcut sitenin nginx/Caddy yapılandırmasıyla ÇAKIŞMAMASI için AYRI bir
+# `server` bloğu ve AYRI bir alt alan adı kullanır (ör. <EXPORT_ALT_ALAN_ADI>).
+# Bu dosyayı /etc/nginx/conf.d/ altına ayrı bir dosya olarak koyun; mevcut
+# sunucu bloklarına dokunmayın. http {} bağlamında include edilmelidir
+# (limit_req_zone / log_format http düzeyindedir).
+#
+# Ne açılır: YALNIZ /export/v1/ yolu (GET/HEAD + POST: son sürümde POST yalnız
+# /export/v1/ack ve /export/v1/control/recording içindir; sqreader/export_state.py,
+# çalışma ağacında, ad son sürümde doğrulanmalı). Reader'ın diğer tüm
+# yolları (/api/*, /health, /health/deep, /viewer-next...) DIŞARI AÇILMAZ:
+# eşleşmeyen her yol 404 döner.
+#
+# Çoklu örnek: yalnız 7787 açıktır. 7788 için blok yorumdadır; 7788 bilinçli
+# olarak açılınca yorumu kaldırın (Zero Zone tarafında baseUrl'e yol ön eki yazılır:
+# https://<EXPORT_ALT_ALAN_ADI>/sr/7787 -> .../sr/7787/export/v1/info).
+
+# Erişim logu: Authorization başlığı YAZILMAZ. Bilinçli olarak $http_authorization
+# ve sorgu dizesi kullanılmaz; $uri yalnız yolu içerir. Token yalnız başlıktadır.
+log_format zz_export '$remote_addr [$time_local] "$request_method $uri" '
+                     '$status $body_bytes_sent rt=$request_time';
+
+# İstek hızı: Zero Zone'un çekim döngüsü için makul; ÖLÇÜLMEDİ, canlıda ayarlanır.
+limit_req_zone $binary_remote_addr zone=zz_export:1m rate=5r/s;
+
+server {
+    listen 443 ssl;
+    # `http2 on;` nginx >= 1.25.1 ister. Daha eski sürümde bu satırı silip
+    # `listen 443 ssl http2;` yazın (HTTP/2 zorunlu değildir, kaldırılabilir).
+    http2 on;
+    server_name <EXPORT_ALT_ALAN_ADI>;
+
+    # Sertifika yolları yer tutucu (Let's Encrypt/ACME ya da kendi CA'nız).
+    ssl_certificate     <SERTIFIKA_ZINCIRI_YOLU>;
+    ssl_certificate_key <SERTIFIKA_ANAHTARI_YOLU>;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 10m;
+    server_tokens off;
+
+    access_log /var/log/nginx/zz-export.access.log zz_export;
+    error_log  /var/log/nginx/zz-export.error.log warn;
+
+    # IP izin listesi: yalnız Zero Zone web sunucusu. Diğer herkes 403.
+    allow <ZZ_WEB_SUNUCUSU_IP>;
+    deny  all;
+
+    # Küçük istek gövdesi: GET gövdesiz; POST (ack/control) gövdesi en çok 4 KB
+    # (reader tarafı sınırı, config örneği açıklaması). 8k güvenli üst sınırdır.
+    client_max_body_size 8k;
+
+    # Eşleşmeyen her yol 404 (reader'ın diğer yolları dışarı açılmaz).
+    location / {
+        return 404;
+    }
+
+    # --- sunucu 7787 (reader 127.0.0.1:8787) ---
+    location ^~ /sr/7787/export/v1/ {
+        limit_except GET HEAD POST {
+            deny all;
+        }
+        limit_req zone=zz_export burst=20 nodelay;
+
+        # Ön eki at, /export/v1/ ile reader'a ilet. URI kısmı olan proxy_pass:
+        # /sr/7787/export/v1/info -> http://127.0.0.1:8787/export/v1/info
+        proxy_pass http://127.0.0.1:8787/export/v1/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        # Authorization AYNEN iletilir (Bearer token). Başka kimlik başlığı
+        # eklenmez; X-Forwarded-*/X-Real-IP eklenmez (reader'ın /health/deep
+        # yolu bu başlıkları proxy izi sayar; o yol zaten dışarı açılmaz).
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Host $host;
+
+        # Akış: kayıt indirmeleri büyük. Belleğe/diske tamponlama YOK.
+        proxy_buffering off;
+        # İstek gövdesi (yalnız küçük POST) tamponlanır: reader (stdlib) chunked istek almaz.
+        proxy_request_buffering on;
+        # Reader zaten gzip/zstd verir (Content-Encoding); nginx yeniden sıkıştırmasın.
+        gzip off;
+
+        # Büyük yanıt için zaman aşımı (ÖLÇÜLMEDİ; en büyük kayıt indirmesine göre ayarlayın).
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    600s;
+        proxy_read_timeout    600s;
+        send_timeout          600s;
+
+        # Reader yönlendirme yapmaz; Zero Zone istemcisi yönlendirmeyi hata sayar.
+        proxy_redirect off;
+    }
+
+    # --- sunucu 7788 (BİLİNÇLİ KARARLA AÇILIR; varsayılan KAPALI) ---
+    # location ^~ /sr/7788/export/v1/ {
+    #     limit_except GET HEAD POST { deny all; }
+    #     limit_req zone=zz_export burst=20 nodelay;
+    #     proxy_pass http://127.0.0.1:8788/export/v1/;
+    #     proxy_http_version 1.1;
+    #     proxy_set_header Connection "";
+    #     proxy_set_header Authorization $http_authorization;
+    #     proxy_set_header Host $host;
+    #     proxy_buffering off;
+    #     proxy_request_buffering on;
+    #     gzip off;
+    #     proxy_connect_timeout 5s;
+    #     proxy_send_timeout    600s;
+    #     proxy_read_timeout    600s;
+    #     send_timeout          600s;
+    #     proxy_redirect off;
+    # }
+}
+
+# HTTP (80) dinlenmez: token düz metin gitmesin. 80 -> 443 yönlendirmesi gerekirse
+# yalnız bu alt alan adı için ayrı bir server bloğuyla, Authorization taşımayan bir
+# 301 ile yapılır; Zero Zone istemcisi yönlendirmeyi zaten hata sayar.

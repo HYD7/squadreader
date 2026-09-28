@@ -55,12 +55,13 @@
     "channel - which is why it lives here and not on a command line other",
     "users on the box can read out of `ps`.",
     "alert_replay_base builds a 'watch the replay' link on each alert; without",
-    "it the alert still arrives, just with no way to go and look.",
+    "it the alert still arrives, just with no way to go and look. null (the",
+    "default) = no link: this fork points at no external site.",
     "alert_min_confidence keeps the noisy end of a detector in the database",
     "without putting it in a channel humans are expected to read."
   ],
   "alert_webhook": null,
-  "alert_replay_base": "https://squadreader.com",
+  "alert_replay_base": null,
   "alert_min_confidence": 0.0,
 
   "_multi_instance_comment": [
@@ -72,19 +73,42 @@
     "SQREADER_INSTANCE."
   ],
 
+  "_net_comment": [
+    "LOCAL MODE (default): net_policy=local-only. This reader opens NO outbound",
+    "connection to any external service: no central platform, no update or",
+    "offset-pack server, no chat webhook on the internet. Only loopback, private",
+    "(RFC1918 / CGNAT / unique-local) addresses and hosts listed VERBATIM in",
+    "net_allow_hosts are reachable (no wildcards, no implied subdomains).",
+    "Under local-only `sqreader enroll` refuses (exit code 2) without touching",
+    "the network and the push below is inert.",
+    "net_policy=allow-central restores the upstream behaviour (enroll, push,",
+    "check-in, offset packs, self-update) and must be chosen explicitly.",
+    "The SQREADER_NET_POLICY / SQREADER_NET_ALLOW_HOSTS environment variables",
+    "win over these keys. `sqreader doctor` and /health/deep show the policy."
+  ],
+  "net_policy": "local-only",
+  "net_allow_hosts": [],
+
   "_push_comment": [
-    "Optional central push (OFF by default). Report FINISHED matches (stats +",
+    "Optional central push. INERT in local mode (net_policy=local-only above):",
+    "nothing is sent and the reader says 'merkezi gönderim kapalı (yerel mod)'.",
+    "It only does anything under net_policy=allow-central (or with the central",
+    "host listed in net_allow_hosts). Then it reports FINISHED matches (stats +",
     ".sqrx replays; never the live map) to a central platform. Enroll first:",
     "`sqreader enroll <token> --central-url https://your-central`. The secret",
     "is stored in a 0600 .env.agent, NOT here. See PRIVACY.md.",
     "push_enabled: master switch (or pass `serve --push`).",
     "push_replay: also upload the match replay (set false for stats-only).",
-    "push_backlog_dir: pending-push queue (default: next to the stats DB)."
+    "push_backlog_dir: pending-push queue (default: next to the stats DB).",
+    "update_enabled / offset_autoheal (both false by default here) fetch signed",
+    "releases / offset packs from that central: leave them false in local mode."
   ],
   "central_url": null,
   "push_enabled": false,
   "push_replay": true,
   "push_backlog_dir": null,
+  "update_enabled": false,
+  "offset_autoheal": false,
 
   "_export_comment": [
     "Optional Export API v1 (OFF by default): a read-only, token-protected pull",
@@ -93,7 +117,39 @@
     "holding the bearer token (at least 32 characters, chmod 600) - the token",
     "itself never goes in this config. Unset, missing, empty or short = the",
     "API is off and every /export/v1/* path answers 404.",
-    "`serve --export-token-file` wins over this key. Needs --stats-db."
+    "`serve --export-token-file` wins over this key. Needs --stats-db.",
+    "Two POST endpoints (same token, Content-Type: application/json, body <= 4 KB)",
+    "are the only writes: /export/v1/control/recording switches NEW recordings",
+    "on/off (an open recording is never cut; stats keep flowing) and",
+    "/export/v1/ack tells the reader which recordings the consumer has mirrored.",
+    "Both are audited in export_audit.log. export_state_dir = where",
+    "export_state.json / export_audit.log / retention_state.json live (null = the",
+    "parent of the recordings directory)."
   ],
-  "export_token_file": null
+  "export_token_file": null,
+  "export_state_dir": null,
+
+  "_retention_comment": [
+    "Recording retention + disk quota (`sqreader retention --recordings-dir ...`,",
+    "run by the daily timer) and the recorder's low-disk guard. 0 = limit off.",
+    "Only FINALIZED recordings are ever removed. With the Export API on",
+    "(retention_require_ack null = auto), age / size rules remove only recordings",
+    "the consumer ACKED. An un-acked recording goes only in a disk EMERGENCY",
+    "(free space below retention_min_free_gb), oldest first, with a WARNING and an",
+    "audit-log line. The active recording, unverified / legacy ones (unless",
+    "retention_include_unverified and their own longer age limit) and anything",
+    "modified in the last retention_in_progress_min minutes are never touched.",
+    "When free space is below retention_min_free_gb and nothing can be freed, NO",
+    "new recording is opened (health: recordingEnabledReason=disk_low); stats",
+    "collection and the game server are unaffected. `retention --dry-run` lists",
+    "what would go and why. Placeholders below: tune to your disk."
+  ],
+  "retention_max_age_days": 90,
+  "retention_max_total_gb": 150,
+  "retention_min_free_gb": 5,
+  "retention_in_progress_min": 60,
+  "retention_min_keep": 3,
+  "retention_require_ack": null,
+  "retention_include_unverified": false,
+  "retention_unverified_max_age_days": 180
 }

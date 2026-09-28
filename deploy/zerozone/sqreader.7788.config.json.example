@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "Zero Zone dagitimi, oyun sunucusu 7788 icin ornek config.",
+    "BU SUNUCU BILINCLI KARARLA ACILIR: `systemctl enable sqreader@7788` VARSAYILAN OLARAK",
+    "YAPILMAZ. Acilmadan once: kendi config'i (bu dosya), kendi veri dizini",
+    "(/var/lib/sqreader/7788), kendi token'i (/etc/sqreader/7788.export-token), kendi",
+    "/etc/sqreader/7788.env (SQREADER_HTTP_PORT=8788). KURULUM-TR.md bolum 12.",
+    "Kurulum: /etc/sqreader/7788.config.json (sahibi root, grubu sqreader, 0640).",
+    "Yorum anahtarlari '_' ile baslar."
+  ],
+
+  "squad_process_name": "SquadGameServer",
+  "server_id": "zz-7788",
+
+  "_data_comment": [
+    "Veri dizini, stats DB ve kayit dizini config'te DEGIL, unit'in komut satirinda",
+    "verilir (sqreader@.service ExecStart):",
+    "  veri dizini   /var/lib/sqreader/7788",
+    "  stats DB      /var/lib/sqreader/7788/stats/player_stats.db",
+    "  kayit dizini  /var/lib/sqreader/7788/recordings",
+    "7787'nin dizinini KULLANMAYIN: reader baska server_id'nin verisi olan dizinde",
+    "baslamayi reddeder."
+  ],
+
+  "_discovery_comment": [
+    "SUREC KESFI PORT OLCUTUYLA YAPILIR; PID sabitlenmez.",
+    "Oyunun komut satirindaki -Port= mu, -QueryPort= mu 7788'i tasiyor? DOGRULANMADI.",
+    "Tespit: `sudo deploy/zerozone/dogrula.sh 7788` bolum 3 komut satirini yazdirir.",
+    "  * 7788 Port= degeriyse:      squad_port = 7788, squad_query_port = null   (asagidaki hali)",
+    "  * 7788 QueryPort= degeriyse: squad_port = null, squad_query_port = 7788",
+    "Ikisi de bos birakilirsa ve makinede birden fazla oyun sureci varsa reader",
+    "BASLAMAZ (ilk eslesme secilmez, sqreader/discovery.py)."
+  ],
+  "squad_port": 7788,
+  "squad_query_port": null,
+
+  "_container_comment": [
+    "expected_container_id: null = konteyner kimligi denetlenmez (yalniz port olcutu).",
+    "Istege bagli ek guvence: 64 hex kimlik ya da en az 12 karakterlik on eki.",
+    "Konteyner YENIDEN OLUSTURULUNCA kimlik DEGISIR; guncellenene kadar reader yeni",
+    "surece BAGLANMAZ (KURULUM-TR.md bolum 11)."
+  ],
+  "expected_container_id": null,
+  "log_path_in_container": null,
+  "log_path": null,
+
+  "_net_comment": [
+    "Calisma zamaninda dis ag YOK. BEKLEYEN: net_policy/net_allow_hosts anahtarlarini",
+    "okuyan kod (G2.3) henuz son surumde olmayabilir; bilinmeyen anahtar yok sayilir.",
+    "Unit ayrica SQREADER_NET_POLICY=local-only ortam degiskenini verir."
+  ],
+  "net_policy": "local-only",
+  "net_allow_hosts": [],
+
+  "_update_comment": [
+    "Otomatik guncelleme ve ofset kendini onarma KAPALI; yukseltme ELLE yapilir."
+  ],
+  "update_enabled": false,
+  "offset_autoheal": false,
+
+  "_push_comment": [
+    "Merkezi gonderim KAPALI; enroll yapilmaz; Zero Zone kendisi ceker."
+  ],
+  "central_url": null,
+  "push_enabled": false,
+  "push_replay": false,
+  "push_backlog_dir": null,
+
+  "_alerts_comment": [
+    "Eklentiler ve Discord bildirimi kapali; webhook bu dosyaya yazilmaz."
+  ],
+  "plugins_config": null,
+  "alert_webhook": null,
+  "alert_replay_base": null,
+  "alert_min_confidence": 0.0,
+
+  "_export_comment": [
+    "Export API v1 token'i BU DOSYADA DEGIL; yalniz dosya yolu. 7787'nin token'ini",
+    "PAYLASMAYIN: her ornegin kendi token'i vardir.",
+    "Uretim: openssl rand -hex 32 | sudo -u sqreader tee /etc/sqreader/7788.export-token"
+  ],
+  "export_token_file": "/etc/sqreader/7788.export-token",
+
+  "_export_state_comment": [
+    "export_state_dir: export_state.json (kayit anahtari + Zero Zone onaylari),",
+    "export_audit.log ve retention_state.json'in yeri. null = kayit dizininin UST dizini",
+    "(/var/lib/sqreader/7788). Yedek bu dosyalari da alir. BEKLEYEN/DOGRULANMALI: bu anahtar",
+    "paralel gorevle ekleniyor; commit sonrasi sqreader/export_state.py ile dogrulayin."
+  ],
+  "export_state_dir": null,
+
+  "_retention_comment": [
+    "Kayit saklama anahtarlari (sqreader retention ve kaydedicinin disk-dusuk korumasi).",
+    "RETENTION AYAR ADLARI SON SURUMDE DOGRULANMALI: sqreader/config.py'de calisma agacinda",
+    "var, commit'lenmemis olabilir. Degerler kodun varsayilanlaridir, OLCULMEDI: disk boyutuna",
+    "gore ayarlayin. retention_require_ack null = Export API aciksa yalniz Zero Zone'un",
+    "onayladigi (ack) kayitlar yas/boyut kuraliyla silinir. 0 = sinir kapali.",
+    "retention_min_free_gb altinda ve bir sey silinemiyorsa YENI KAYIT ACILMAZ (istatistik ve oyun etkilenmez)."
+  ],
+  "retention_max_age_days": 90,
+  "retention_max_total_gb": 150,
+  "retention_min_free_gb": 5,
+  "retention_in_progress_min": 60,
+  "retention_min_keep": 3,
+  "retention_require_ack": null,
+  "retention_include_unverified": false,
+  "retention_unverified_max_age_days": 180
+}

@@ -1,0 +1,17 @@
+# Zero Zone dağıtımı: günlük kayıt saklama zamanlayıcısı, örnek başına.
+#   systemctl enable --now sqreader-retention@7787.timer
+# Şablon zamanlayıcı, aynı örnek adlı sqreader-retention@<port>.service'i çalıştırır.
+# Yalnız 7787 için etkinleştirilir; 7788 için ancak 7788 bilinçli açılınca.
+
+[Unit]
+Description=SquadReader günlük kayıt saklama - oyun portu %i
+
+[Timer]
+OnCalendar=daily
+# Makine kapalıysa bir sonraki açılışta çalıştır.
+Persistent=true
+# Gece yarısı çakışmasın.
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

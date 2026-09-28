@@ -16,6 +16,7 @@ All subcommands auto-detect the live SquadGameServer PID.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import signal
@@ -26,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import __version__, config, discovery, elo
+from . import __version__, config, discovery, elo, export_state, netpolicy
 
 # Plugins run inside the tick loop. At the production 0.5 Hz the whole tick has
 # ~2 s, and the reader — not the plugins — owns that. Anything past this gets
@@ -648,6 +649,27 @@ def _save_placer_cache(caches, path: Path) -> None:
         pass
 
 
+def _export_control(recordings_dir: Path | None, stats_db: Path | None):
+    """``(state_dir, retention_policy, control_state)`` for the Export API and the
+    recorder's gate. ``control_state`` (the persistent recording switch and the
+    acks) exists only when there is a recordings directory to control."""
+    state_dir = export_state.resolve_state_dir(
+        config.get("export_state_dir"), recordings_dir, stats_db)
+    policy = export_state.policy_from_config(config.get)
+    control = (export_state.ExportState(state_dir)
+               if state_dir is not None and recordings_dir is not None else None)
+    return state_dir, policy, control
+
+
+def _target_info(target: Any) -> dict[str, Any] | None:
+    """The discovered game process as the export health reports it (no PID)."""
+    if target is None:
+        return None
+    return {"gamePort": target.game_port, "queryPort": target.query_port,
+            "matchedPortKind": target.matched_port_kind,
+            "containerId": target.container_id}
+
+
 class _WaitingEndpoint:
     """A minimal status endpoint that is up ONLY while the reader has no game
     process to read (before the first attach, and after the game is lost).
@@ -682,16 +704,21 @@ class _WaitingEndpoint:
                         if getattr(args, "stats_db", None) else None)
             rec = (Path(args.recordings_dir).expanduser()
                    if getattr(args, "recordings_dir", None) else None)
+            state_dir, policy, control = _export_control(rec, stats_db)
             api = configure_export(
                 getattr(args, "export_token_file", None)
                 or config.get("export_token_file"),
                 server_id=args.server_id, stats_db=stats_db, recordings_dir=rec,
                 squad_port=config.get("squad_port"),
                 container_id=os.environ.get("SQREADER_CONTAINER_ID") or None,
-                reader_state=lambda: "unknown")
+                reader_state=lambda: "unknown",
+                state=control, data_dir=state_dir, retention=policy,
+                degraded_reasons=lambda: [
+                    f"reader_{self.status.get('readerState') or 'unknown'}"])
             self._srv = serve_in_background(
                 args.host, args.port, _TickBeat(), recordings_dir=rec,
-                health_provider=lambda: dict(self.status),
+                health_provider=lambda: {**self.status,
+                                         "netPolicy": netpolicy.status()},
                 stale_after_sec=0.0, cors_origin=args.cors_origin,
                 stats_db=stats_db, export_api=api)
             print(f"[degraded] durum ucu açık: http://{args.host}:{args.port} "
@@ -877,6 +904,10 @@ def _serve_once(args: argparse.Namespace) -> int:
             # swallows it and the reader carries on, exactly as designed.
             "plugins": plugin_mgr.stats() if plugin_mgr is not None else None,
             "cacheSizes": caches.sizes(),
+            # What may leave this box: the network policy and, in one line,
+            # what that means for the (optional) central push.
+            "netPolicy": netpolicy.status(),
+            "centralPush": ingest_client.push_status(push_creds),
         }
 
     recordings_dir = (Path(args.recordings_dir).expanduser()
@@ -912,9 +943,16 @@ def _serve_once(args: argparse.Namespace) -> int:
         push_backlog = Path(config.get("push_backlog_dir")
                             or ingest_client.default_backlog_dir(stats_db_path))
         push_backlog.mkdir(parents=True, exist_ok=True)
-        print(f"  central push -> {push_creds.get('SQREADER_PUSH_URL')} "
-              f"(community {push_creds.get('SQREADER_COMMUNITY') or '?'})",
-              file=sys.stderr)
+        if netpolicy.is_allowed(push_creds.get("SQREADER_PUSH_URL") or ""):
+            print(f"  central push -> {push_creds.get('SQREADER_PUSH_URL')} "
+                  f"(community {push_creds.get('SQREADER_COMMUNITY') or '?'})",
+                  file=sys.stderr)
+        else:
+            # Enrolled and enabled, but the network policy does not let this box
+            # reach its central: say so instead of announcing a push that cannot
+            # happen. Matches are still queued and sent if the policy is opened.
+            print(f"  {ingest_client.LOCAL_MODE_MESSAGE}: kayıtlı merkeze "
+                  f"gönderim yapılmayacak", file=sys.stderr)
     elif getattr(args, "push", False) and not push_creds:
         print("  --push given but this box is not enrolled; run "
               "`sqreader enroll <token>` first (push disabled)", file=sys.stderr)
@@ -943,6 +981,8 @@ def _serve_once(args: argparse.Namespace) -> int:
         if push_backlog is not None:
             ingest_client.enqueue(push_backlog, match_id)
 
+    push_blocked_said = [False]
+
     def _flush_push() -> None:
         if not push_active or push_backlog is None or stats_db_path is None:
             return
@@ -950,7 +990,12 @@ def _serve_once(args: argparse.Namespace) -> int:
             res = ingest_client.flush_backlog(
                 push_backlog, stats_db_path, recordings_dir, push_creds or {},
                 push_replay_files=bool(config.get("push_replay")))
-            if res["sent"] or res["errors"]:
+            if res.get("blocked"):
+                if not push_blocked_said[0]:
+                    push_blocked_said[0] = True
+                    print(f"[push] {ingest_client.LOCAL_MODE_MESSAGE}",
+                          file=sys.stderr)
+            elif res["sent"] or res["errors"]:
                 print(f"[push] sent={res['sent']} pending={res['pending']} "
                       f"errors={res['errors']}", file=sys.stderr)
         except Exception as _fe:
@@ -1145,8 +1190,13 @@ def _serve_once(args: argparse.Namespace) -> int:
                             config.get("alert_min_confidence") or 0))
                     emit = alert_notifier.wrap(emit)
                     # Never print the URL: it is a credential.
-                    print("plugins: alerts also go to a webhook",
-                          file=sys.stderr)
+                    if netpolicy.is_allowed(str(hook)):
+                        print("plugins: alerts also go to a webhook",
+                              file=sys.stderr)
+                    else:
+                        print("plugins: alert webhook ayarlı ama yerel modda dış "
+                              "ağa gönderim kapalı; uyarılar yalnız veritabanına "
+                              "yazılır", file=sys.stderr)
                 plugin_mgr = PluginManager(
                     cfg, server_id=args.server_id, emit_alert=emit)
                 if plugin_mgr.plugins:
@@ -1185,6 +1235,26 @@ def _serve_once(args: argparse.Namespace) -> int:
     def _export_reader_state() -> str:
         return "stale" if beat.last_tick_age_sec > _stale_after else "ok"
 
+    # The recording switch + ack store + audit trail live in the data directory
+    # (export_state.py). The recorder consults the gate only when it is about to
+    # OPEN a recording, so it can neither cut an open one nor touch the stats.
+    _state_dir, _retention_policy, _control_state = _export_control(
+        recordings_dir, stats_db_path)
+    _record_gate = (export_state.RecordingGate(
+        _control_state, recordings_dir, _retention_policy, data_dir=_state_dir)
+        if recordings_dir is not None else None)
+
+    def _active_recording() -> dict[str, Any] | None:
+        cur = record_state_box.get("current")
+        if cur is None:
+            return None
+        try:
+            size: int | None = cur.path.stat().st_size
+        except OSError:
+            size = None
+        return {"id": cur.path.stem, "startedAtUtc": cur.started_at.isoformat(),
+                "sizeBytes": size}
+
     export_api = configure_export(
         getattr(args, "export_token_file", None) or config.get("export_token_file"),
         server_id=args.server_id, stats_db=stats_db_path,
@@ -1194,7 +1264,12 @@ def _serve_once(args: argparse.Namespace) -> int:
                     else config.get("squad_port")),
         container_id=((target.container_id if target is not None else None)
                       or os.environ.get("SQREADER_CONTAINER_ID") or None),
-        reader_state=_export_reader_state)
+        reader_state=_export_reader_state,
+        state=_control_state, data_dir=_state_dir, retention=_retention_policy,
+        active_recording=_active_recording,
+        target_info=lambda: _target_info(target),
+        degraded_reasons=lambda: (["scanner_suspect"]
+                                  if stats_state.get("scannerSuspect") else []))
     srv = serve_in_background(args.host, args.port, beat,
                               recordings_dir=recordings_dir,
                               icons_dir=icons_dir,
@@ -1308,6 +1383,7 @@ def _serve_once(args: argparse.Namespace) -> int:
         "last_tick": None,
         "tick_sequence_required": True,
         "missing_tick_warned": False,
+        "record_gate": _record_gate,
     }
     record_filename_buffer: list = []
     # Scanner-health streak counter. STABILITY-FIRST: a genuine suspicion
@@ -1477,6 +1553,7 @@ def _serve_once(args: argparse.Namespace) -> int:
                                   f"{bad_streak}, NOT exiting)", file=sys.stderr)
                     else:
                         bad_streak = 0
+                    stats_state["scannerSuspect"] = bad_streak > 0
                     _consume_full(snap)
             except discovery.TargetLost:
                 raise
@@ -1729,8 +1806,12 @@ def cmd_enroll(args: argparse.Namespace) -> int:
         creds = agent_creds.load()
         if not creds or not creds.get("SQREADER_AGENT_ID"):
             print("not enrolled — run: sqreader enroll <token> --central-url URL")
+            print(f"  ağ politikası: {netpolicy.effective_policy()}; "
+                  f"{ingest_client.push_status(creds)}")
             return 0
         print(f"enrolled: agent_id={creds['SQREADER_AGENT_ID']}")
+        print(f"  ağ politikası: {netpolicy.effective_policy()}; "
+              f"{ingest_client.push_status(creds)}")
         if locked:
             print(f"  build:     locked to {locked}")
         print(f"  central:   {creds.get('SQREADER_PUSH_URL') or creds.get('SQREADER_CENTRAL_URL')}")
@@ -1747,6 +1828,14 @@ def cmd_enroll(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
     requested = args.central_url or config.get("central_url")
+    # Local mode: nothing is sent anywhere, not even a probe. Decided from the
+    # policy alone, BEFORE any hardware fingerprint / request is made.
+    _enroll_target = locked or requested
+    if netpolicy.is_local_only() and not (
+            _enroll_target and netpolicy.is_allowed(_enroll_target)):
+        print("enroll kapalı: yerel modda merkezi kayıt yapılmaz "
+              "(net_policy=local-only)", file=sys.stderr)
+        return 2
     if locked:
         # A released binary enrolls against the central it was built for, full
         # stop. Warn rather than fail when someone passes a different URL — the
@@ -1849,6 +1938,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                  "skipped": "SKIP"}[_disc_status]
     for _i, _line in enumerate(_disc_lines):
         print(f"  {_disc_tag if _i == 0 else '    '} {_line}")
+    print()
+    from . import ingest_client as _ic
+    _np = netpolicy.status()
+    print("== ağ politikası ==")
+    print(f"  INFO politika: {_np['policy']}; izin listesi: "
+          f"{', '.join(_np['allowHosts']) or '(boş)'}")
+    print(f"  INFO {_ic.push_status(_ic.current_creds())}")
     print()
 
     proc = config.resolve_game_process(args.pid)
@@ -2517,117 +2613,82 @@ def cmd_retention(args: argparse.Namespace) -> int:
 
     Recordings grow by hundreds of MB a day and nothing else deletes them. On a
     box that also runs the game server a full disk takes SQUAD down too, so this
-    is a safety valve, not housekeeping.
-
-    Ported from deploy/cleanup_recordings.sh because a compiled agent must not
-    depend on a shell script sitting next to it.
+    is a safety valve, not housekeeping. The engine lives in export_state.py
+    (see its docstring for the full rules); limits come from the config keys
+    ``retention_*`` unless a flag overrides them.
 
     Safety rules, in force for every policy:
-      * a file modified within --in-progress-min minutes is the match being
-        recorded RIGHT NOW — never touched, deleting it corrupts a live capture;
-      * a .sqrx is removed together with its .meta.json sidecar;
-      * --dry-run changes nothing.
+      * only FINALIZED recordings are candidates; the active one, unverified /
+        legacy ones (unless --include-unverified and their own, longer age limit)
+        and any whose sidecar cannot be read are never touched;
+      * a file modified within --in-progress-min minutes is never touched;
+      * when the export API is in use (or --require-ack) a recording is removed by
+        the age / size rules only after the consumer ACKNOWLEDGED it; an un-acked
+        one goes only in a disk EMERGENCY (free space below --min-free-gb), oldest
+        first, logged and written to export_audit.log;
+      * a .sqrx is removed together with its .meta.json sidecar, crash-safely;
+      * only plain files directly inside --recordings-dir are ever removed;
+      * --dry-run changes nothing and says what would go and why.
 
     Exits 0 even when nothing matched, so the systemd timer stays green.
     """
-    import shutil
-    import time
-
     d = Path(args.recordings_dir).expanduser()
     if not d.is_dir():
         print(f"recordings dir not found: {d}", file=sys.stderr)
         return 1
     dry = bool(args.dry_run)
+
+    base = export_state.policy_from_config(config.get)
+
+    def pick(name: str, default: Any) -> Any:
+        v = getattr(args, name, None)
+        return default if v is None else v
+
+    gib = 1024 ** 3
+    policy = dataclasses.replace(
+        base,
+        max_age_days=float(pick("max_age_days", base.max_age_days)),
+        max_total_bytes=int(float(pick("max_total_gb", base.max_total_bytes / gib)) * gib),
+        min_free_bytes=int(float(pick("min_free_gb", base.min_free_bytes / gib)) * gib),
+        in_progress_min=float(pick("in_progress_min", base.in_progress_min)),
+        min_keep=int(pick("min_keep", base.min_keep)),
+        require_ack=bool(pick("require_ack", base.require_ack)),
+        include_unverified=bool(pick("include_unverified", base.include_unverified)),
+        unverified_max_age_days=float(
+            pick("unverified_max_age_days", base.unverified_max_age_days)),
+    )
+    state_dir = export_state.resolve_state_dir(
+        getattr(args, "state_dir", None) or config.get("export_state_dir"), d, None)
     if dry:
         print("[retention] DRY RUN — nothing will be deleted")
 
-    cutoff = time.time() - args.in_progress_min * 60
-    files = []
-    for p in d.glob("*.sqrx"):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        if st.st_mtime > cutoff:          # the in-flight recording
-            continue
-        files.append((st.st_mtime, st.st_size, p))
-    files.sort()                          # oldest first
+    try:
+        res = export_state.run_retention(d, policy, data_dir=state_dir, dry_run=dry)
+    except OSError as exc:
+        print(f"[retention] recordings dir unreadable: {exc}", file=sys.stderr)
+        return 1
 
-    doomed: list[Path] = []
-
-    def mark(p: Path) -> None:
-        if p not in doomed:
-            doomed.append(p)
-
-    if args.max_age_days:
-        age_cut = time.time() - args.max_age_days * 86400
-        for mtime, _sz, p in files:
-            if mtime < age_cut:
-                mark(p)
-
-    live = sum(sz for _m, sz, p in files if p not in doomed)
-    if args.max_total_gb:
-        limit = args.max_total_gb * 1024**3
-        for _m, sz, p in files:
-            if live <= limit:
-                break
-            if p not in doomed:
-                mark(p)
-                live -= sz
-
-    if args.min_free_gb:
-        need = args.min_free_gb * 1024**3
-        try:
-            free = shutil.disk_usage(d).free
-        except OSError:
-            free = need
-        freed = sum(sz for _m, sz, p in files if p in doomed)
-        # Always keep the newest few, whatever the numbers say. Free space is a
-        # property of the WHOLE filesystem but recordings are the only thing
-        # this can delete, so on a box where the disk is full for another reason
-        # (the game server's own install, another service) the target is
-        # unreachable and the loop below would delete every match ever recorded
-        # and still not reach it.
-        keepers = {p for _m, _sz, p in files[-max(args.min_keep, 0):]} \
-            if args.min_keep else set()
-        deletable = sum(sz for _m, sz, p in files
-                        if p not in doomed and p not in keepers)
-        if free + freed + deletable < need:
-            print(f"[retention] cannot reach {args.min_free_gb:g} GB free by "
-                  f"pruning recordings (only {deletable / 1024**3:.1f} GB here, "
-                  f"{free / 1024**3:.1f} GB free) — something else is filling "
-                  f"the disk; not deleting on this policy", file=sys.stderr)
-        else:
-            for _m, sz, p in files:
-                if free + freed >= need:
-                    break
-                if p not in doomed and p not in keepers:
-                    mark(p)
-                    freed += sz
-
-    if not doomed:
+    for rec_id in res.repaired:
+        print(f"[retention] {'would finish' if dry else 'finishing'} an interrupted "
+              f"removal: {rec_id} (yarım kalan silme tamamlanıyor)")
+    for note in res.notes:
+        print(f"[retention] {note}", file=sys.stderr)
+    for err in res.errors:
+        print(f"[retention] {err}", file=sys.stderr)
+    for rec_id in res.skipped:
+        print(f"[retention] {rec_id}: durumu değişti, atlandı", file=sys.stderr)
+    if not res.deleted and not res.repaired:
         print("[retention] nothing to prune")
         return 0
-
-    total = 0
-    for p in doomed:
-        try:
-            total += p.stat().st_size
-        except OSError:
-            pass
-        print(f"[retention] {'would remove' if dry else 'removing'} {p.name}")
-        if dry:
-            continue
-        for victim in (p, p.with_suffix(".meta.json")):
-            try:
-                victim.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                print(f"[retention] could not remove {victim}: {exc}",
-                      file=sys.stderr)
-    print(f"[retention] {len(doomed)} recording(s), "
-          f"{total / 1024**3:.2f} GB {'would be' if dry else ''} freed")
+    for v in res.deleted:
+        print(f"[retention] {'would remove' if dry else 'removing'} {v.rec_id}.sqrx "
+              f"— {v.detail}")
+    print(f"[retention] {len(res.deleted)} recording(s), "
+          f"{res.freed_bytes / 1024**3:.2f} GB {'would be' if dry else ''} freed")
+    if res.unacked_deleted:
+        print(f"[retention] UYARI: {res.unacked_deleted} onaysız kayıt "
+              f"{'silinecekti' if dry else 'silindi'} (disk acil durumu)",
+              file=sys.stderr)
     return 0
 
 
@@ -3022,18 +3083,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="prune old recordings (run by the daily timer; a full disk on a "
              "game box takes Squad down too)")
     p_ret.add_argument("--recordings-dir", type=Path, required=True)
-    p_ret.add_argument("--max-age-days", type=float, default=0,
-                       help="drop recordings older than N days (0 = off)")
-    p_ret.add_argument("--max-total-gb", type=float, default=0,
-                       help="drop oldest until the dir fits in N GB (0 = off)")
-    p_ret.add_argument("--min-free-gb", type=float, default=0,
-                       help="drop oldest until the filesystem has N GB free")
-    p_ret.add_argument("--in-progress-min", type=float, default=60,
+    p_ret.add_argument("--max-age-days", type=float, default=None,
+                       help="drop acked finalized recordings older than N days "
+                            "(0 = off; default: config retention_max_age_days)")
+    p_ret.add_argument("--max-total-gb", type=float, default=None,
+                       help="drop oldest until the dir fits in N GB (0 = off; "
+                            "default: config retention_max_total_gb)")
+    p_ret.add_argument("--min-free-gb", type=float, default=None,
+                       help="free-space floor: below it is a disk EMERGENCY and "
+                            "the oldest recordings go, un-acked ones last (0 = "
+                            "off; default: config retention_min_free_gb)")
+    p_ret.add_argument("--in-progress-min", type=float, default=None,
                        help="never touch a file modified in the last N minutes "
-                            "— that is the match recording right now")
-    p_ret.add_argument("--min-keep", type=int, default=3,
+                            "— that is the match recording right now (default: "
+                            "config retention_in_progress_min)")
+    p_ret.add_argument("--min-keep", type=int, default=None,
                        help="always keep at least this many of the newest "
-                            "recordings, whatever the free-space policy says")
+                            "recordings, whatever the free-space policy says "
+                            "(default: config retention_min_keep)")
+    p_ret.add_argument("--require-ack", dest="require_ack", action="store_true",
+                       default=None,
+                       help="remove only recordings the export consumer acked "
+                            "(default: on exactly when the export API is on)")
+    p_ret.add_argument("--no-require-ack", dest="require_ack", action="store_false",
+                       help="do not wait for acks")
+    p_ret.add_argument("--include-unverified", action="store_true", default=None,
+                       help="also remove unverified / legacy recordings older "
+                            "than --unverified-max-age-days")
+    p_ret.add_argument("--unverified-max-age-days", type=float, default=None,
+                       help="age limit for unverified recordings (default: "
+                            "config retention_unverified_max_age_days)")
+    p_ret.add_argument("--state-dir", type=Path, default=None,
+                       help="where export_state.json / export_audit.log live "
+                            "(default: config export_state_dir, else the parent "
+                            "of --recordings-dir)")
     p_ret.add_argument("--dry-run", action="store_true")
     p_ret.set_defaults(func=cmd_retention)
     return ap
@@ -3042,6 +3125,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
+    # The network policy comes from the config before ANY command runs, so no
+    # subcommand can reach a network the operator did not allow. A bad value
+    # stops here with a clear message instead of silently keeping (or opening)
+    # the network.
+    try:
+        allow = config.get("net_allow_hosts")
+        if allow is not None and not isinstance(allow, (str, list, tuple)):
+            raise ValueError("net_allow_hosts bir liste olmalı")
+        netpolicy.configure(policy=config.get("net_policy"), allow_hosts=allow)
+    except ValueError as e:
+        print(f"HATA: yapılandırma (net_policy / net_allow_hosts): {e}",
+              file=sys.stderr)
+        return 2
     try:
         return args.func(args)
     except discovery.DiscoveryError as e:

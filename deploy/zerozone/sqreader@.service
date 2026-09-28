@@ -1,0 +1,142 @@
+# Zero Zone dağıtımı: SquadReader okuyucusu, ÖRNEK BAŞINA şablon unit.
+#
+# Örnek adı = OYUN PORTU:  sqreader@7787.service
+#   /etc/sqreader/7787.config.json        config (root:sqreader 0640)
+#   /etc/sqreader/7787.export-token       Export API token'ı (sqreader:sqreader 0600)
+#   /etc/sqreader/7787.env                HTTP portu (aşağıya bakın)
+#   /var/lib/sqreader/7787/               bu örneğin TÜM verisi (stats DB, kayıtlar, önbellek)
+#
+# YALNIZ sqreader@7787 etkinleştirilir. sqreader@7788 için AYNI şablon geçerlidir
+# ama `enable` EDİLMEZ: ikinci sunucu ancak bilinçli kararla, kendi config'i,
+# veri dizini ve token'ı ile açılır (KURULUM-TR.md, bölüm 12).
+#
+# /etc/sqreader/<port>.env içeriği (sır DEĞİL; KURULUM-TR.md'de nasıl yazılacağı var):
+#   SQREADER_HTTP_PORT=8787          # 7787 -> 8787, 7788 -> 8788
+#
+# DOĞRULANMADI: bu dosya Windows geliştirme makinesinde yazıldı. `systemd-analyze
+# verify` ve gerçek başlatma "çalıştırılmadı: Linux host gerekli".
+#
+# PID SABİTLENMEZ. Oyun süreci config'teki port/konteyner ölçütüyle her başlangıçta
+# yeniden bulunur (sqreader/discovery.py). Bu unit oyun sunucusunu ya da
+# konteynerini yeniden başlatmaz, sinyallemez, durdurmaz; onunla hiçbir bağımlılığı
+# (Requires/BindsTo/PartOf) yoktur. Reader'ın yeniden başlaması oyunu etkilemez.
+
+[Unit]
+Description=SquadReader okuyucu (Zero Zone) - oyun portu %i
+Documentation=file:///opt/sqreader/src/deploy/zerozone/KURULUM-TR.md
+After=network.target
+# Yeniden başlatma fırtınası olmasın: 15 dakikada en çok 5 başlatma, sonra unit
+# "failed" kalır (görünür hata). Elle: systemctl reset-failed sqreader@%i
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sqreader
+Group=sqreader
+WorkingDirectory=/var/lib/sqreader/%i
+EnvironmentFile=/etc/sqreader/%i.env
+Environment=SQREADER_CONFIG=/etc/sqreader/%i.config.json
+# Ağ politikası: yapılandırma dosyasındaki net_policy anahtarına ek olarak ortam
+# değişkeni de verilir (sqreader/netpolicy.py: SQREADER_NET_POLICY). Çalışma
+# zamanında dış ağ yok.
+Environment=SQREADER_NET_POLICY=local-only
+# Adres önbelleği örnek başına ayrı (paylaşılan dosyada yarış olmasın) ve yazılabilir
+# veri dizini içinde (sqreader/addrcache.py: SQR_ADDR_CACHE).
+Environment=SQR_ADDR_CACHE=/var/lib/sqreader/%i/addr-cache.json
+Environment=HOME=/var/lib/sqreader/%i
+# Oyun meta verisi (data/static) pip paketine DAHİL DEĞİL (pyproject: yalnız sqreader*);
+# kaynak ağaçtan okunur (sqreader/squad/metadata.py: SQREADER_DATA_DIR).
+Environment=SQREADER_DATA_DIR=/opt/sqreader/src/data/static
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+
+# %i yalnız rakam olmalı (yanlış örnek adıyla başlatmayı reddet). "$$" = systemd'de
+# değişmez "$".
+ExecStartPre=/bin/sh -c 'case "$$1" in ""|*[!0-9]*) echo "ornek adi oyun portu (rakam) olmali: $$1" >&2; exit 1;; esac' sh %i
+# HTTP yalnız 127.0.0.1'e bağlanır. WireGuard/özel arayüz IP'si gerekiyorsa
+# KURULUM-TR.md bölüm 10'daki nginx yolunu ya da drop-in'i kullanın; şablonu
+# değiştirmeyin.
+# PID argümanı YOK (süreç port ölçütüyle bulunur). --hz 2: packaging/install.sh ile aynı tek katmanlı kayıt (ÖLÇÜLMEDİ).
+ExecStart=/opt/sqreader/venv/bin/sqreader serve \
+    --host 127.0.0.1 --port ${SQREADER_HTTP_PORT} --hz 2 \
+    --recordings-dir /var/lib/sqreader/%i/recordings \
+    --stats-db /var/lib/sqreader/%i/stats/player_stats.db \
+    --export-token-file /etc/sqreader/%i.export-token
+
+# Yalnızca on-failure: `systemctl stop` sonrası geri gelmez. Reader oyunu
+# beklerken kendi içinde bekler (çıkmaz); süreç çökerse ya da yapılandırma hatasıyla
+# çıkarsa burada yeniden denenir.
+Restart=on-failure
+RestartSec=20
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sqreader-%i
+
+# --- Yetenekler (asgari) ------------------------------------------------------
+# Yalnızca ikisi. Gerekçe (KURULUM-TR.md bölüm 7):
+#  CAP_SYS_PTRACE     : başka kullanıcının/konteynerin sürecinin /proc/<pid>/mem
+#                       (pread) ve process_vm_readv ile okunması (PTRACE_MODE_ATTACH
+#                       erişim denetimi) ve kernel.yama.ptrace_scope=1/2 iken izin.
+#  CAP_DAC_READ_SEARCH: /proc/<pid>/mem (0600, hedef kullanıcıya ait) ve konteyner
+#                       dosya sisteminde (/proc/<pid>/root/...) başka UID'ye ait log
+#                       dosyasını okuma.
+# DOĞRULANMADI: gerçek host'ta bu iki yetenekle yetip yetmediği. Yetmezse
+# KURULUM-TR.md "Geçici teşhis" bölümü: root ile ELLE denenir, kalıcı çözüm olarak
+# unit root'a çevrilmez.
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+
+# --- Dosya sistemi ------------------------------------------------------------
+ProtectSystem=strict
+# read-only (yes DEĞİL): /home altındaki konteynersiz oyun kurulumunun logu
+# (squad_log_glob geri dönüşü) okunabilsin, yazılamasın. Konteyner logu
+# /proc/<pid>/root üzerinden okunur; bu sihirli bağlantı HEDEF sürecin bağlama
+# alanını gösterir ve reader'ın kendi ProtectHome ayarından etkilenmez
+# (DOĞRULANMADI: gerçek host'ta dogrula.sh bölüm 4 ile sınanır).
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/sqreader/%i
+UMask=0027
+
+# --- Çekirdek / sistem yüzeyi ---------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+# BİLİNÇLİ OLARAK KULLANILMAYANLAR (KURULUM-TR.md bölüm 7):
+#  * ProtectProc= / ProcSubset= / PrivateUsers= / PrivatePIDs= : /proc görünürlüğünü
+#    ya da kullanıcı ad alanını kısıtlar; oyun sürecini görmeyi ve CAP_SYS_PTRACE'in
+#    ana ad alanında geçerli olmasını BOZAR.
+#  * MemoryDenyWriteExecute= : CPython + ctypes/libffi ile uyumu bu makinede
+#    DOĞRULANMADI; bozarsa reader başlamaz. Canlıda ayrı denenmeli (bölüm 7).
+#  * SystemCallFilter= : izin verilecek sistem çağrıları listesi ölçülmeden
+#    yazılmadı (yanlış liste reader'ı sessizce öldürür). Canlıda `strace -c -f`
+#    ile çıkarılıp eklenebilir.
+
+# --- Kaynak sınırları (ÖLÇÜLMEDİ; oyun sunucusuna öncelik) -----------------------
+# Bu değerler makul başlangıç tahminidir, ölçüm değildir. Canlıda systemd-cgtop /
+# pidstat ile bakılıp ayarlanır (KURULUM-TR.md bölüm 14).
+Nice=10
+CPUQuota=50%
+MemoryMax=1G
+MemoryHigh=768M
+TasksMax=64
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

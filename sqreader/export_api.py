@@ -13,6 +13,14 @@ download, and all need ``Authorization: Bearer <token>``::
     GET /export/v1/matches?after=&limit=  finalized matches, cursor-paged
     GET /export/v1/matches/<matchId>      one match bundle (sqr-match-1)
     GET /export/v1/recordings/<recId>     NDJSON replay stream (gzip / zstd)
+    POST /export/v1/control/recording     {"enabled", "reason", "actor"}: switch new
+                                          recordings on/off (persistent, audited)
+    POST /export/v1/ack                   {"recordings": [...]}: "I mirrored these"
+
+The two POST endpoints are the ONLY writes. They change nothing but the recording
+switch and the ack list (files in the data directory, see export_state.py); they
+take no path, run no command and change no other setting. A POST needs the same
+Bearer token, ``Content-Type: application/json`` and a body of at most 4 KB.
 
 What is exported
 ----------------
@@ -44,10 +52,23 @@ import re
 import sqlite3
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import __version__
+from . import __version__, netpolicy
+from .export_state import (
+    MAX_ACTOR_LEN,
+    REC_ID_RE,
+    ExportState,
+    ExportStateError,
+    RetentionPolicy,
+    clean_text,
+    disk_status,
+    free_bytes,
+    read_retention_state,
+    recording_status,
+)
 from .ingest_client import SCHEMA_MATCH, build_match_bundle
 from .recording_lifecycle import RECORDING_STATE_FINALIZED
 
@@ -57,6 +78,15 @@ SCHEMA_EXPORT = "sqr-export-1"
 MIN_TOKEN_LEN = 32
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
+#: POST bodies are tiny JSON objects; anything bigger is refused unread (413).
+MAX_BODY_BYTES = 4096
+MAX_ACK_RECORDINGS = 100
+_CONTROL_PATH = "/export/v1/control/recording"
+_ACK_PATH = "/export/v1/ack"
+_POST_PATHS = (_CONTROL_PATH, _ACK_PATH)
+#: How long a retention run that had to delete un-acked recordings keeps the
+#: reader reported as degraded.
+_UNACKED_DEGRADED_SEC = 24 * 3600
 
 # Match ids are OWI MatchIDs (UUIDs) or synthetic uuid5 strings. ':' is
 # excluded so "<endedAt>:<matchId>" splits unambiguously. fullmatch, not
@@ -176,6 +206,17 @@ class _SidecarIndex:
             return None
         return sqrx, meta
 
+    def finalized_ids(self) -> Optional[list[str]]:
+        """Ids of every finalized recording of THIS server; None when the
+        directory cannot be read."""
+        try:
+            names = sorted(e.name for e in os.scandir(self._dir)
+                           if e.name.endswith(".sqrx"))
+        except OSError:
+            return None
+        return [n[:-len(".sqrx")] for n in names
+                if self.finalized(n[:-len(".sqrx")]) is not None]
+
     def by_match(self) -> dict[str, list[dict[str, Any]]]:
         """match id -> export items of its finalized recordings."""
         out: dict[str, list[dict[str, Any]]] = {}
@@ -206,6 +247,19 @@ def _count(value: Any) -> Optional[int]:
         and value >= 0 else None
 
 
+def _positive(value: Any) -> Optional[float | int]:
+    """A configured limit, or None when it is off (0 / unset)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return int(value) if float(value).is_integer() else value
+
+
+def _safe_ip(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    return clean_text(value, 64) or None
+
+
 def recording_item(rec_id: str, meta: dict, size_bytes: int) -> dict[str, Any]:
     return {
         "id": rec_id,
@@ -228,7 +282,13 @@ class ExportApi:
                  recordings_dir: Optional[Path] = None,
                  squad_port: Optional[int] = None,
                  container_id: Optional[str] = None,
-                 reader_state: Optional[Callable[[], str]] = None) -> None:
+                 reader_state: Optional[Callable[[], str]] = None,
+                 state: Optional[ExportState] = None,
+                 data_dir: Optional[Path] = None,
+                 retention: Optional[RetentionPolicy] = None,
+                 active_recording: Optional[Callable[[], Optional[dict]]] = None,
+                 target_info: Optional[Callable[[], Optional[dict]]] = None,
+                 degraded_reasons: Optional[Callable[[], list[str]]] = None) -> None:
         if len(token) < MIN_TOKEN_LEN:
             raise ValueError(f"export token must be at least {MIN_TOKEN_LEN} characters")
         self._token = token.encode("utf-8")
@@ -240,23 +300,54 @@ class ExportApi:
         self._squad_port = squad_port
         self._container_id = container_id
         self._reader_state = reader_state
+        # Control switch + ack store live in the data directory (by default the
+        # recordings directory's parent): see export_state.py.
+        if data_dir is not None:
+            self._data_dir: Optional[Path] = Path(data_dir)
+        elif self._recordings_dir is not None:
+            self._data_dir = self._recordings_dir.parent
+        else:
+            self._data_dir = self._db.parent
+        self.state = state if state is not None else ExportState(self._data_dir)
+        self._retention = retention if retention is not None else RetentionPolicy()
+        self._active_recording = active_recording
+        self._target_info = target_info
+        self._degraded_reasons = degraded_reasons
+
+    max_body_bytes = MAX_BODY_BYTES
 
     def __repr__(self) -> str:  # the token must not leak through a stray repr
         return f"ExportApi(server_id={self.server_id!r})"
 
     # -- entry point ---------------------------------------------------------
 
-    def handle(self, method: str, target: str,
-               authorization: Optional[str]) -> ExportResponse:
+    def handle(self, method: str, target: str, authorization: Optional[str], *,
+               body: Optional[bytes] = None, content_type: Optional[str] = None,
+               content_length: Optional[int] = None,
+               client_ip: Optional[str] = None) -> ExportResponse:
         """Answer one request. `target` is the raw request target
-        (path plus query string); `authorization` the Authorization header."""
+        (path plus query string); `authorization` the Authorization header.
+        `body`, `content_type`, `content_length` and `client_ip` matter to POST
+        only (`body` is None when the transport refused to read it)."""
+        path, _, query = target.partition("?")
+        if method == "POST" and path in _POST_PATHS:
+            if not self._authorized(authorization):
+                return _error(401, "unauthorized",
+                              headers=[("WWW-Authenticate", "Bearer")])
+            if query:
+                return _error(400, "bad_query")
+            try:
+                if path == _CONTROL_PATH:
+                    return self._control(body, content_type, content_length, client_ip)
+                return self._ack(body, content_type, content_length, client_ip)
+            except ExportStateError as exc:
+                return _error(500, exc.kind)
         if method not in ("GET", "HEAD"):
             return _error(405, "method_not_allowed",
                           headers=[("Allow", "GET, HEAD")])
         if not self._authorized(authorization):
             return _error(401, "unauthorized",
                           headers=[("WWW-Authenticate", "Bearer")])
-        path, _, query = target.partition("?")
         try:
             return self._route(path, query)
         except sqlite3.Error:
@@ -285,6 +376,8 @@ class ExportApi:
             return self._match(parts[1])
         if len(parts) == 2 and parts[0] == "recordings":
             return self._recording(parts[1])
+        if parts in (["control", "recording"], ["ack"]):
+            return _error(405, "method_not_allowed", headers=[("Allow", "POST")])
         return _not_found()
 
     # -- helpers -------------------------------------------------------------
@@ -381,6 +474,11 @@ class ExportApi:
                 rec_ok = False
         state = self._state()
         ok = readable and rec_ok is not False and state != "stale"
+        min_free = self._retention.min_free_bytes
+        enabled, why = recording_status(self.state, self._recordings_dir, min_free)
+        ret_state = (read_retention_state(self._data_dir)
+                     if self._data_dir is not None else None) or {}
+        reasons = self._degraded(state, readable, rec_ok, min_free, ret_state)
         return _json(200, {
             "schema": SCHEMA_EXPORT,
             "ok": ok,
@@ -388,7 +486,179 @@ class ExportApi:
             "lastFinalizedAt": last,
             "statsDbReadable": readable,
             "recordingsDirReadable": rec_ok,
+            "recordingEnabled": enabled,
+            "recordingEnabledReason": why,
+            "recordingControl": self.state.recording_control(),
+            "activeRecording": self._provided(
+                self._active_recording, ("id", "startedAtUtc", "sizeBytes")),
+            "disk": disk_status(self._recordings_dir, min_free),
+            "retention": {
+                "maxAgeDays": _positive(self._retention.max_age_days),
+                "maxTotalBytes": _positive(self._retention.max_total_bytes),
+                "lastRunAt": ret_state.get("lastRunAt")
+                if isinstance(ret_state.get("lastRunAt"), str) else None,
+                "lastDeleted": _count(ret_state.get("lastDeleted")),
+            },
+            "degradedReason": reasons[0] if reasons else None,
+            "degradedReasons": reasons,
+            "target": self._provided(
+                self._target_info,
+                ("gamePort", "queryPort", "matchedPortKind", "containerId")),
+            "netPolicy": netpolicy.status(),
+            "pendingAck": self._pending_ack(),
         })
+
+    @staticmethod
+    def _provided(provider: Optional[Callable[[], Optional[dict]]],
+                  keys: tuple[str, ...]) -> Optional[dict[str, Any]]:
+        """A dict from a status hook, cut to `keys`; None if unknown. A hook must
+        never break the API."""
+        if provider is None:
+            return None
+        try:
+            got = provider()
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(got, dict):
+            return None
+        return {k: got.get(k) for k in keys}
+
+    def _degraded(self, state: str, readable: bool, rec_ok: Optional[bool],
+                  min_free: int, ret_state: dict) -> list[str]:
+        """Machine-readable reasons the reader is degraded, most important
+        first. Empty = nothing wrong that this API can see."""
+        out: list[str] = []
+        if state not in ("ok", "unknown"):
+            out.append(f"reader_{state}")
+        if self._degraded_reasons is not None:
+            try:
+                extra = self._degraded_reasons()
+            except Exception:  # noqa: BLE001
+                extra = []
+            out += [r for r in extra if isinstance(r, str) and r and r not in out]
+        if not readable:
+            out.append("stats_db_unreadable")
+        if rec_ok is False:
+            out.append("recordings_dir_unreadable")
+        if min_free > 0 and self._recordings_dir is not None:
+            free = free_bytes(self._recordings_dir)
+            if free is not None and free < min_free:
+                out.append("disk_low")
+        stamp = ret_state.get("lastUnackedDeletedAt")
+        if isinstance(stamp, str):
+            try:
+                when = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc)
+                if ((datetime.now(timezone.utc) - when).total_seconds()
+                        < _UNACKED_DEGRADED_SEC):
+                    out.append("unacked_deleted")
+            except ValueError:
+                pass
+        return out
+
+    def _pending_ack(self) -> Optional[int]:
+        if self._sidecars is None:
+            return None
+        ids = self._sidecars.finalized_ids()
+        if ids is None:
+            return None
+        acked = self.state.acked_ids()
+        return sum(1 for i in ids if i not in acked)
+
+    # -- POST endpoints --------------------------------------------------------
+
+    @staticmethod
+    def _read_body(body: Optional[bytes], content_type: Optional[str],
+                   content_length: Optional[int]
+                   ) -> tuple[Optional[dict], Optional[ExportResponse]]:
+        """The JSON object of a POST body, or the error response to send."""
+        ctype = (content_type or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            return None, _error(415, "unsupported_media_type")
+        if content_length is None:
+            return None, _error(411, "length_required")
+        if content_length > MAX_BODY_BYTES:
+            return None, _error(413, "payload_too_large")
+        if body is None or len(body) != content_length:
+            return None, _error(400, "bad_body")
+
+        def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            for k, v in pairs:
+                if k in out:
+                    raise ValueError("duplicate key")
+                out[k] = v
+            return out
+
+        def no_constants(name: str) -> Any:
+            raise ValueError(name)
+
+        try:
+            obj = json.loads(body.decode("utf-8"), object_pairs_hook=no_duplicates,
+                             parse_constant=no_constants)
+        except (ValueError, RecursionError):
+            return None, _error(400, "bad_json")
+        if not isinstance(obj, dict):
+            return None, _error(400, "bad_json")
+        return obj, None
+
+    def _control(self, body: Optional[bytes], content_type: Optional[str],
+                 content_length: Optional[int], client_ip: Optional[str]
+                 ) -> ExportResponse:
+        obj, err = self._read_body(body, content_type, content_length)
+        if err is not None or obj is None:
+            return err or _error(400, "bad_json")
+        if not set(obj) <= {"enabled", "reason", "actor"}:
+            return _error(400, "unknown_key")
+        enabled = obj.get("enabled")
+        if not isinstance(enabled, bool):
+            return _error(400, "bad_enabled")
+        reason = obj.get("reason", "")
+        if reason is None:
+            reason = ""
+        if not isinstance(reason, str):
+            return _error(400, "bad_reason")
+        actor = obj.get("actor")
+        if not isinstance(actor, str) or not clean_text(actor, MAX_ACTOR_LEN):
+            return _error(400, "bad_actor")
+        self.state.set_recording(enabled, reason, actor, _safe_ip(client_ip))
+        now_enabled, why = recording_status(
+            self.state, self._recordings_dir, self._retention.min_free_bytes)
+        return _json(200, {
+            "schema": SCHEMA_EXPORT,
+            "recordingEnabled": now_enabled,
+            "recordingEnabledReason": why,
+            "control": self.state.recording_control(),
+        })
+
+    def _ack(self, body: Optional[bytes], content_type: Optional[str],
+             content_length: Optional[int], client_ip: Optional[str]
+             ) -> ExportResponse:
+        obj, err = self._read_body(body, content_type, content_length)
+        if err is not None or obj is None:
+            return err or _error(400, "bad_json")
+        if "recordings" not in obj:
+            return _error(400, "bad_recordings")
+        if set(obj) != {"recordings"}:
+            return _error(400, "unknown_key")
+        ids = obj["recordings"]
+        if not isinstance(ids, list) or not ids:
+            return _error(400, "bad_recordings")
+        if len(ids) > MAX_ACK_RECORDINGS:
+            return _error(400, "too_many_recordings")
+        if not all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids):
+            return _error(400, "bad_recordings")
+        accepted: list[str] = []
+        rejected: list[str] = []
+        for rec_id in dict.fromkeys(ids):
+            ok = bool(REC_ID_RE.fullmatch(rec_id)) and (
+                self.state.is_acked(rec_id)
+                or (self._sidecars is not None
+                    and self._sidecars.finalized(rec_id) is not None))
+            (accepted if ok else rejected).append(rec_id)
+        self.state.ack(accepted, _safe_ip(client_ip))
+        return _json(200, {"schema": SCHEMA_EXPORT, "accepted": accepted,
+                           "rejected": rejected})
 
     def _matches(self, query: str) -> ExportResponse:
         try:
@@ -545,8 +815,8 @@ def configure_export(token_file: Any, *, server_id: str,
                      recordings_dir: Optional[Path] = None,
                      squad_port: Any = None,
                      container_id: Optional[str] = None,
-                     reader_state: Optional[Callable[[], str]] = None
-                     ) -> Optional[ExportApi]:
+                     reader_state: Optional[Callable[[], str]] = None,
+                     **extra: Any) -> Optional[ExportApi]:
     """Build the Export API from settings, or None when it is (or must stay) off.
 
     No token file configured is the normal, silent default. A configured file
@@ -567,7 +837,8 @@ def configure_export(token_file: Any, *, server_id: str,
         port = None
     return ExportApi(token=token, server_id=server_id, stats_db=Path(stats_db),
                      recordings_dir=recordings_dir, squad_port=port,
-                     container_id=container_id or None, reader_state=reader_state)
+                     container_id=container_id or None, reader_state=reader_state,
+                     **extra)
 
 
 __all__ = ["ExportApi", "ExportResponse", "RecordingStream", "configure_export",
