@@ -99,6 +99,14 @@ DEFAULTS: dict[str, Any] = {
     # "https://squadreader.com". Without it an alert still arrives, just
     # without a way to go and look at it.
     "alert_replay_base": None,
+
+    # Export API v1 (sqreader/export_api.py): a token-protected, read-only pull
+    # interface for finished matches and their replays. Path to a file holding
+    # the bearer token (>= 32 characters; keep it mode 0600). None / missing /
+    # empty file = the API is OFF and every /export/v1/* path is a plain 404.
+    # `serve --export-token-file` wins over this. The token itself never goes
+    # in this config file.
+    "export_token_file": None,
 }
 
 _cache: dict[str, Any] | None = None

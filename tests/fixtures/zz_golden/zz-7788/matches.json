@@ -1,0 +1,28 @@
+{
+  "schema": "sqr-export-1",
+  "serverId": "zz-7788",
+  "matches": [
+    {
+      "matchId": "5a7e0b00-7788-4a00-8000-00000000b001",
+      "serverId": "zz-7788",
+      "startedAt": 1788285600,
+      "endedAt": 1788286190,
+      "endState": "finalized",
+      "mapName": "Narva",
+      "layerName": "Narva_RAAS_v1",
+      "gameMode": "RAAS",
+      "bundleSha256": "1582b103b134a5f8504c7fcc372e1fb53d77516200f6192760ae33af517620fd",
+      "recordings": [
+        {
+          "id": "2026-09-01_180020_Narva_RAAS_v1_0000b001",
+          "state": "finalized",
+          "totalFrames": 231,
+          "sizeBytes": 160853,
+          "startedAtUtc": "2026-09-01T18:00:00+00:00",
+          "endedAtUtc": "2026-09-01T18:09:50+00:00"
+        }
+      ]
+    }
+  ],
+  "nextCursor": null
+}

@@ -934,6 +934,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
             if (cand / "index.html").is_file():
                 frontend_dir = cand
                 break
+    # Export API v1: token-protected, read-only. Off (and every /export/v1/*
+    # path a 404) unless a usable token file is configured.
+    from .export_api import configure_export
+    _stale_after = max(30.0, 15.0 / args.hz)
+
+    def _export_reader_state() -> str:
+        return "stale" if beat.last_tick_age_sec > _stale_after else "ok"
+
+    export_api = configure_export(
+        getattr(args, "export_token_file", None) or config.get("export_token_file"),
+        server_id=args.server_id, stats_db=stats_db_path,
+        recordings_dir=recordings_dir, squad_port=config.get("squad_port"),
+        container_id=os.environ.get("SQREADER_CONTAINER_ID") or None,
+        reader_state=_export_reader_state)
     srv = serve_in_background(args.host, args.port, beat,
                               recordings_dir=recordings_dir,
                               icons_dir=icons_dir,
@@ -943,11 +957,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
                               # 15 missed ticks is far past jitter and well into
                               # "the producer is wedged", with a 30s floor so a
                               # slow cadence doesn't make /health twitchy.
-                              stale_after_sec=max(30.0, 15.0 / args.hz),
+                              stale_after_sec=_stale_after,
                               cors_origin=args.cors_origin,
-                              stats_db=stats_db_path)
+                              stats_db=stats_db_path,
+                              export_api=export_api)
     period = 1.0 / args.hz
     feature_list = ["/health"]
+    if export_api is not None:
+        feature_list.append("/export/v1")
     if recordings_dir:
         feature_list.append("/api/recordings")
     if icons_dir:
@@ -2574,6 +2591,12 @@ def build_parser() -> argparse.ArgumentParser:
                               "Off by default: the viewer is same-origin in every "
                               "real deployment, and a wildcard would let any page "
                               "on the internet pull the whole match archive.")
+    p_serve.add_argument("--export-token-file", type=Path, default=None,
+                         help="enable the read-only Export API at /export/v1/* "
+                              "(finalized matches + replays for Zero Zone). "
+                              "File holding the bearer token (>= 32 chars, mode "
+                              "0600). Also read from config export_token_file. "
+                              "Missing/empty/short token = API off, 404.")
     p_serve.add_argument("--squad-log", type=str, default=None,
                          help="path to the server's SquadGame.log for "
                               "authoritative kill-feed events. Auto-detected "

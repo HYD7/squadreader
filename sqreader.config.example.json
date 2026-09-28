@@ -58,5 +58,16 @@
   "central_url": null,
   "push_enabled": false,
   "push_replay": true,
-  "push_backlog_dir": null
+  "push_backlog_dir": null,
+
+  "_export_comment": [
+    "Optional Export API v1 (OFF by default): a read-only, token-protected pull",
+    "interface (GET /export/v1/*) that hands FINISHED matches and their replays",
+    "to a consumer such as Zero Zone. export_token_file is the PATH of a file",
+    "holding the bearer token (at least 32 characters, chmod 600) - the token",
+    "itself never goes in this config. Unset, missing, empty or short = the",
+    "API is off and every /export/v1/* path answers 404.",
+    "`serve --export-token-file` wins over this key. Needs --stats-db."
+  ],
+  "export_token_file": null
 }

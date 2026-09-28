@@ -18,6 +18,8 @@ Endpoints
     GET /api/recordings         list FINALIZED .sqrx files with sidecar metadata
     GET /api/recording/<id>     decompressed NDJSON stream for one finished file
     GET /api/recording/<id>/meta  just the sidecar metadata for one file
+    GET /export/v1/*            token-protected read-only Export API
+                                (export_api.py); a plain 404 unless enabled
 
 The `/api/recordings*` endpoints only activate when the server is
 started with a `recordings_dir` (passed through from
@@ -104,6 +106,11 @@ class _TickBeat:
     def last_tick_age_sec(self) -> float:
         with self._lock:
             return time.monotonic() - self._last
+
+
+def _is_export_path(path: str) -> bool:
+    """Whether `path` belongs to the token-protected Export API (export_api.py)."""
+    return path == "/export/v1" or path.startswith("/export/v1/")
 
 
 # ---------- recordings helpers ----------------------------------------------
@@ -354,6 +361,7 @@ def _make_handler(
     stale_after_sec: float = 30.0,
     cors_origin: str = "",
     stats_db: Optional[Path] = None,
+    export_api: Any = None,
 ) -> type[http.server.BaseHTTPRequestHandler]:
 
     # Static layer bounds, for turning heatmap world coordinates into something
@@ -387,6 +395,9 @@ def _make_handler(
 
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
             path = self.path.split("?", 1)[0]
+            if _is_export_path(path):
+                self._handle_export("GET")
+                return
             # /api/recording/<id>[/meta] — variable path, handle first
             if path.startswith("/api/recording/"):
                 self._handle_recording_one(path[len("/api/recording/"):])
@@ -427,6 +438,49 @@ def _make_handler(
                 self._handle_spa(path)
             else:
                 self.send_error(404, "no such endpoint")
+
+        # ---------- /export/v1/* (see export_api.py) ----------
+
+        def _handle_export(self, method: str) -> None:
+            """Hand a /export/v1/* request to the Export API.
+
+            Disabled (no export_api) answers the same 404 as any unknown path,
+            for every method, so the API's existence is not revealed.
+            """
+            if export_api is None:
+                self.send_error(404, "no such endpoint")
+                return
+            res = export_api.handle(method, self.path,
+                                    self.headers.get("Authorization"))
+            head = method == "HEAD"
+            if res.recording is not None:
+                self._stream_recording(
+                    res.recording.path, res.recording.rec_id, cacheable=False,
+                    extra_headers=tuple(res.recording.headers), head_only=head)
+                return
+            self.send_response(res.status)
+            self.send_header("Content-Type", res.content_type)
+            self.send_header("Content-Length", str(len(res.body)))
+            for hname, hvalue in res.headers:
+                self.send_header(hname, hvalue)
+            self.end_headers()
+            if not head:
+                self.wfile.write(res.body)
+
+        def _other_method(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if _is_export_path(path):
+                self._handle_export(self.command)
+                return
+            # Same answer the stdlib gives for a method with no do_* handler.
+            self.send_error(501, f"Unsupported method ({self.command!r})")
+
+        do_HEAD = _other_method  # noqa: N815 (BaseHTTPRequestHandler API)
+        do_POST = _other_method  # noqa: N815
+        do_PUT = _other_method  # noqa: N815
+        do_DELETE = _other_method  # noqa: N815
+        do_PATCH = _other_method  # noqa: N815
+        do_OPTIONS = _other_method  # noqa: N815
 
         def _send_cors_headers(self) -> None:
             # Off unless someone deliberately opts in. Every real deployment is
@@ -934,6 +988,19 @@ def _make_handler(
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            self._stream_recording(sqrx, rec_id)
+
+        def _stream_recording(self, sqrx: Path, rec_id: str, *,
+                              cacheable: bool = True,
+                              extra_headers: tuple[tuple[str, str], ...] = (),
+                              head_only: bool = False) -> None:
+            """Stream one FINALIZED recording as NDJSON.
+
+            The caller has already proved the recording is finalized. Shared by
+            /api/recording/<id> (`cacheable`: immutable + ETag) and the Export
+            API (`cacheable=False`: `Cache-Control: no-store`, no ETag, plus
+            `extra_headers`). `head_only` sends the headers and no body.
+            """
             # ---- Full NDJSON stream: content-negotiated encoding + caching ----
             # The on-disk .sqrx is ~6-10x smaller than the NDJSON it decodes to.
             # We used to decompress it and ship full-size plaintext, uncached —
@@ -945,14 +1012,13 @@ def _make_handler(
             # plus ETag/immutable caching so repeat opens hit the browser cache.
             from .sqrx import SqrxReader
 
-            # Only finalized (immutable) recordings reach here — the gate above
-            # 404s everything else — so zstd passthrough and long-lived caching
-            # are always safe.
-            finalized = True
-            enc = self._negotiate_encoding(allow_zstd=finalized)
+            # Only finalized (immutable) recordings reach here — the callers
+            # 404 everything else — so zstd passthrough is always safe, and so
+            # is long-lived caching where the caller asks for it.
+            enc = self._negotiate_encoding(allow_zstd=True)
 
             etag: str | None = None
-            if finalized:
+            if cacheable:
                 _st = sqrx.stat()
                 # Encoding is part of the representation, so it is baked into the
                 # ETag (belt-and-suspenders with Vary: Accept-Encoding below, so a
@@ -981,7 +1047,7 @@ def _make_handler(
             # body cannot tell 'finished' from 'connection dropped halfway',
             # and a silently truncated recording is the kind of wrong that
             # looks right.
-            chunked = self.request_version == "HTTP/1.1"
+            chunked = self.request_version == "HTTP/1.1" and not head_only
             if chunked:
                 self.protocol_version = "HTTP/1.1"
 
@@ -999,14 +1065,18 @@ def _make_handler(
             self.send_header("Vary", "Accept-Encoding")
             if enc != "identity":
                 self.send_header("Content-Encoding", enc)
-            if finalized and etag is not None:
+            for hname, hvalue in extra_headers:
+                self.send_header(hname, hvalue)
+            if cacheable and etag is not None:
                 self.send_header(
                     "Cache-Control", "public, max-age=31536000, immutable")
                 self.send_header("ETag", etag)
             else:
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", "no-store")
             self._send_cors_headers()
             self.end_headers()
+            if head_only:
+                return
 
             def _chunk(data: bytes) -> None:
                 # HTTP/1.1 chunked: hex-length + \r\n + data + \r\n. Never emit a
@@ -1059,6 +1129,7 @@ def serve_in_background(host: str, port: int, heartbeat: _TickBeat,
                         stale_after_sec: float = 30.0,
                         cors_origin: str = "",
                         stats_db: Optional[Path] = None,
+                        export_api: Any = None,
                         ) -> _ThreadingHTTPServer:
     """Bind and start the server on a daemon thread; return the server.
 
@@ -1076,13 +1147,16 @@ def serve_in_background(host: str, port: int, heartbeat: _TickBeat,
 
     `cors_origin` is empty (no CORS) unless a cross-origin viewer genuinely needs
     it — see `_send_cors_headers`.
+
+    `export_api` is an `export_api.ExportApi` (or None). None keeps every
+    /export/v1/* path a plain 404.
     """
     meta_cache = _MetaCache() if recordings_dir is not None else None
     srv = _ThreadingHTTPServer(
         (host, port),
         _make_handler(heartbeat, recordings_dir, meta_cache, icons_dir,
                       sqmaps_dir, frontend_dir, health_provider,
-                      stale_after_sec, cors_origin, stats_db),
+                      stale_after_sec, cors_origin, stats_db, export_api),
     )
     t = threading.Thread(target=srv.serve_forever, daemon=True,
                          name="sqreader-httpsrv")

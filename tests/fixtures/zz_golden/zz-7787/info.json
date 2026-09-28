@@ -1,0 +1,9 @@
+{
+  "schema": "sqr-export-1",
+  "readerVersion": "1.4.8",
+  "statsSchemaVersion": 6,
+  "serverId": "zz-7787",
+  "squadPort": 7787,
+  "containerId": "zz-container-7787",
+  "readerState": "unknown"
+}
