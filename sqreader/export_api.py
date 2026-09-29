@@ -12,6 +12,10 @@ download, and all need ``Authorization: Bearer <token>``::
     GET /export/v1/health                 what the reader can actually vouch for
     GET /export/v1/matches?after=&limit=  finalized matches, cursor-paged
     GET /export/v1/matches/<matchId>      one match bundle (sqr-match-1)
+    GET /export/v1/unverified?after=&limit=
+                                          summary list of matches that are NOT
+                                          exported (end never observed); no
+                                          player data, no stats
     GET /export/v1/recordings/<recId>     NDJSON replay stream (gzip / zstd)
     POST /export/v1/control/recording     {"enabled", "reason", "actor"}: switch new
                                           recordings on/off (persistent, audited)
@@ -29,6 +33,16 @@ the match was actually observed). ``unverified`` / ``legacy`` / ``open`` rows
 never appear, and asking for one by id gives the same 404 as an unknown id.
 Only recordings whose sidecar says ``recordingState='finalized'`` are served.
 A recording belongs to a match through the sidecar's ``matchId``.
+
+Making the matches that are NOT exported visible
+------------------------------------------------
+A match whose end the reader never saw stays ``unverified`` and is never
+exported (see docs/zerozone-kacan-maclar.md for when that happens). Two
+read-only views make that loss countable without exporting anything from
+those matches: ``health.unverified`` (counts) and ``GET /export/v1/unverified``
+(a per-match SUMMARY: ids, times, map, peak players, player COUNT, never a
+player row or a statistic). They do not touch the finalized-only guarantee of
+``matches`` / ``matches/<id>`` / ``recordings/<id>``.
 
 Off unless configured
 ---------------------
@@ -50,6 +64,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -87,6 +102,12 @@ _POST_PATHS = (_CONTROL_PATH, _ACK_PATH)
 #: How long a retention run that had to delete un-acked recordings keeps the
 #: reader reported as degraded.
 _UNACKED_DEGRADED_SEC = 24 * 3600
+
+# Same pattern Zero Zone's isTrainingLayer() uses (jensen|training, any case),
+# applied to the three descriptive columns joined by spaces. LIKE is
+# case-insensitive for ASCII, which is all this pattern contains.
+_TRAINING_TERMS = ("jensen", "training")
+_DAY_SEC = 86400
 
 # Match ids are OWI MatchIDs (UUIDs) or synthetic uuid5 strings. ':' is
 # excluded so "<endedAt>:<matchId>" splits unambiguously. fullmatch, not
@@ -138,6 +159,14 @@ def _error(status: int, code: str, *, headers: Optional[list[tuple[str, str]]] =
 def _not_found() -> ExportResponse:
     # One body for "no such match", "not finalized" and "bad id" alike.
     return _error(404, "not_found")
+
+
+def _training_sql(alias: str = "") -> str:
+    """SQL boolean: the match's map/layer/mode names look like a training range."""
+    p = f"{alias}." if alias else ""
+    hay = (f"(COALESCE({p}map_name,'') || ' ' || COALESCE({p}layer_name,'') "
+           f"|| ' ' || COALESCE({p}game_mode,''))")
+    return "(" + " OR ".join(f"{hay} LIKE '%{t}%'" for t in _TRAINING_TERMS) + ")"
 
 
 def canonical_json(obj: Any) -> bytes:
@@ -288,7 +317,8 @@ class ExportApi:
                  retention: Optional[RetentionPolicy] = None,
                  active_recording: Optional[Callable[[], Optional[dict]]] = None,
                  target_info: Optional[Callable[[], Optional[dict]]] = None,
-                 degraded_reasons: Optional[Callable[[], list[str]]] = None) -> None:
+                 degraded_reasons: Optional[Callable[[], list[str]]] = None,
+                 clock: Optional[Callable[[], float]] = None) -> None:
         if len(token) < MIN_TOKEN_LEN:
             raise ValueError(f"export token must be at least {MIN_TOKEN_LEN} characters")
         self._token = token.encode("utf-8")
@@ -313,6 +343,7 @@ class ExportApi:
         self._active_recording = active_recording
         self._target_info = target_info
         self._degraded_reasons = degraded_reasons
+        self._clock = clock if clock is not None else time.time
 
     max_body_bytes = MAX_BODY_BYTES
 
@@ -372,6 +403,8 @@ class ExportApi:
             return self._health()
         if parts == ["matches"]:
             return self._matches(query)
+        if parts == ["unverified"]:
+            return self._unverified(query)
         if len(parts) == 2 and parts[0] == "matches":
             return self._match(parts[1])
         if len(parts) == 2 and parts[0] == "recordings":
@@ -506,7 +539,67 @@ class ExportApi:
                 ("gamePort", "queryPort", "matchedPortKind", "containerId")),
             "netPolicy": netpolicy.status(),
             "pendingAck": self._pending_ack(),
+            "unverified": self._unverified_summary(),
         })
+
+    def _unverified_summary(self) -> Optional[dict[str, Any]]:
+        """How many matches of THIS server were never exported because their end
+        was not observed, next to how many were. None when the stats DB cannot
+        be read.
+
+        Only ``status='final'`` rows count: a match that is still running (or
+        was re-opened after a reader restart) is neither. Times are the
+        observed last moment (``ended_at``) in epoch seconds. Training-range
+        matches are counted apart (``training``): Zero Zone pays nothing for
+        them, so they must not inflate the headline numbers.
+        """
+        now = int(self._clock())
+        d1, d7, d30 = (now - n * _DAY_SEC for n in (1, 7, 30))
+        sql = (
+            "SELECT end_state AS es, " + _training_sql() + " AS tr, "
+            "COUNT(*) AS total, "
+            "SUM(ended_at >= ?) AS n1, SUM(ended_at >= ?) AS n7, "
+            "SUM(ended_at >= ?) AS n30, MAX(ended_at) AS last "
+            "FROM matches WHERE status='final' "
+            "AND end_state IN ('unverified','finalized') "
+            "AND server_id=? AND ended_at IS NOT NULL GROUP BY es, tr")
+        try:
+            conn = self._connect()
+            try:
+                rows = conn.execute(sql, (d1, d7, d30, self.server_id)).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError):
+            return None
+
+        def agg(state: str, training: bool) -> dict[str, Any]:
+            for r in rows:
+                if r["es"] == state and bool(r["tr"]) == training:
+                    return {"total": int(r["total"]), "n1": int(r["n1"] or 0),
+                            "n7": int(r["n7"] or 0), "n30": int(r["n30"] or 0),
+                            "last": r["last"]}
+            return {"total": 0, "n1": 0, "n7": 0, "n30": 0, "last": None}
+
+        u, f = agg("unverified", False), agg("finalized", False)
+        ut, ft = agg("unverified", True), agg("finalized", True)
+        denom = u["n30"] + f["n30"]
+        return {
+            "total": u["total"],
+            "last24h": u["n1"],
+            "last7d": u["n7"],
+            "last30d": u["n30"],
+            "lastAt": u["last"],
+            "finalizedLast7d": f["n7"],
+            "finalizedLast30d": f["n30"],
+            "ratioLast30d": round(u["n30"] / denom, 4) if denom else None,
+            "training": {
+                "total": ut["total"],
+                "last30d": ut["n30"],
+                "lastAt": ut["last"],
+                "finalizedLast30d": ft["n30"],
+            },
+            "asOf": now,
+        }
 
     @staticmethod
     def _provided(provider: Optional[Callable[[], Optional[dict]]],
@@ -660,28 +753,38 @@ class ExportApi:
         return _json(200, {"schema": SCHEMA_EXPORT, "accepted": accepted,
                            "rejected": rejected})
 
-    def _matches(self, query: str) -> ExportResponse:
+    @staticmethod
+    def _paging(query: str) -> tuple[Optional[tuple[int, Optional[tuple[int, str]]]],
+                                     Optional[ExportResponse]]:
+        """((limit, after cursor), None), or (None, the 400 to send)."""
         try:
             qs = urllib.parse.parse_qs(query, keep_blank_values=True,
                                        strict_parsing=bool(query))
         except ValueError:
-            return _error(400, "bad_query")
+            return None, _error(400, "bad_query")
         if any(len(v) != 1 for v in qs.values()):
-            return _error(400, "bad_query")
+            return None, _error(400, "bad_query")
 
         limit = DEFAULT_LIMIT
         if "limit" in qs:
             raw = qs["limit"][0]
             if not _LIMIT_RE.fullmatch(raw) or int(raw) < 1:
-                return _error(400, "bad_limit")
+                return None, _error(400, "bad_limit")
             limit = min(int(raw), MAX_LIMIT)
 
         after: Optional[tuple[int, str]] = None
         if "after" in qs:
             m = _CURSOR_RE.fullmatch(qs["after"][0])
             if not m:
-                return _error(400, "bad_cursor")
+                return None, _error(400, "bad_cursor")
             after = (int(m.group(1)), m.group(2))
+        return (limit, after), None
+
+    def _matches(self, query: str) -> ExportResponse:
+        paging, err = self._paging(query)
+        if err is not None or paging is None:
+            return err or _error(400, "bad_query")
+        limit, after = paging
 
         sql = ("SELECT match_id, ended_at FROM matches WHERE status='final' "
                "AND end_state='finalized' AND server_id=? AND ended_at IS NOT NULL")
@@ -725,6 +828,64 @@ class ExportApi:
             "schema": SCHEMA_EXPORT,
             "serverId": self.server_id,
             "matches": items,
+            "nextCursor": next_cursor,
+        })
+
+    def _unverified(self, query: str) -> ExportResponse:
+        """Summary of the matches that are NOT exported because their end was
+        never observed (status final, end_state unverified), oldest first.
+
+        Deliberately no player rows and no statistics: the counters of such a
+        match are unconfirmed and must not become rewards. ``lastSeenAt`` is the
+        last moment the reader saw the match, NOT a proven end time.
+        """
+        paging, err = self._paging(query)
+        if err is not None or paging is None:
+            return err or _error(400, "bad_query")
+        limit, after = paging
+        sql = (
+            "SELECT m.match_id, m.server_id, m.started_at, m.ended_at, "
+            "m.end_state, m.end_reason, m.map_name, m.layer_name, m.game_mode, "
+            "m.peak_players, m.tick_count, "
+            "(SELECT COUNT(*) FROM player_matches pm "
+            " WHERE pm.match_id = m.match_id) AS player_count, "
+            + _training_sql("m") + " AS is_training "
+            "FROM matches m WHERE m.status='final' AND m.end_state='unverified' "
+            "AND m.server_id=? AND m.ended_at IS NOT NULL")
+        args: list[Any] = [self.server_id]
+        if after is not None:
+            sql += " AND (m.ended_at > ? OR (m.ended_at = ? AND m.match_id > ?))"
+            args += [after[0], after[0], after[1]]
+        sql += " ORDER BY m.ended_at ASC, m.match_id ASC LIMIT ?"
+        args.append(limit)
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, args).fetchall()
+        finally:
+            conn.close()
+        items = [{
+            "matchId": r["match_id"],
+            "serverId": r["server_id"],
+            "startedAt": r["started_at"],
+            "lastSeenAt": r["ended_at"],
+            "endedAt": r["ended_at"],
+            "endState": r["end_state"],
+            "endReason": r["end_reason"],
+            "mapName": r["map_name"],
+            "layerName": r["layer_name"],
+            "gameMode": r["game_mode"],
+            "peakPlayers": r["peak_players"],
+            "tickCount": r["tick_count"],
+            "playerCount": int(r["player_count"] or 0),
+            "isTraining": bool(r["is_training"]),
+        } for r in rows]
+        next_cursor: Optional[str] = None
+        if len(rows) == limit:
+            next_cursor = f"{rows[-1]['ended_at']}:{rows[-1]['match_id']}"
+        return _json(200, {
+            "schema": SCHEMA_EXPORT,
+            "serverId": self.server_id,
+            "unverifiedMatches": items,
             "nextCursor": next_cursor,
         })
 

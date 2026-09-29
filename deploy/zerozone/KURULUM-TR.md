@@ -508,6 +508,30 @@ olarak alır. Örnek (yer tutucular):
   kısa bir 401 penceresi olur (Zero Zone `unauthorized` hatası verip yeniden dener). Şüphede hemen döndürün.
 - Token yedeğe alınmaz (bölüm 15).
 
+### 10.4 Kaçan (dışa aktarılmayan) maçları izleme
+
+Okuyucu bir maçın SONUNU göremezse (kapalıydı, oyun sunucusu yeniden başladı, sentetik kimlik durum
+dosyası kayboldu) o maç `unverified` kalır ve Export API ile HİÇ verilmez: o maçta oyuncular ne
+istatistik ne EXP alır. İki salt-okunur görünürlük vardır (aynı token, aynı güvenlik; oyuncu verisi ve
+istatistik DÖNMEZ):
+
+```bash
+# (token komut satırına yazılmaz: başlık dosyadan okunur; `curl -H @dosya` curl 7.55+ ister, çalıştırılmadı: Linux host gerekli)
+# sayılar: unverified.{total,last24h,last7d,last30d,lastAt,finalizedLast7d,finalizedLast30d,ratioLast30d,training,asOf}
+curl -s -H @<(printf 'Authorization: Bearer %s' "$(sudo cat /etc/sqreader/7787.export-token)")   http://127.0.0.1:8787/export/v1/health | python3 -m json.tool
+# hangi maçlar kaçtı (özet; sayfalı: ?after=<imleç>&limit=<n>)
+curl -s -H @<(printf 'Authorization: Bearer %s' "$(sudo cat /etc/sqreader/7787.export-token)")   "http://127.0.0.1:8787/export/v1/unverified?limit=20" | python3 -m json.tool
+```
+
+- `ratioLast30d` = kaçan / (kaçan + verilen), son 30 gün; payda 0 ise `null`. Eğitim katmanı maçları
+  `training` altında ayrıdır ve üst düzey sayılara dahil değildir.
+- Güncel oran BİLİNMİYOR ve bu depodan tahmin edilemez; canlıda bu alanla ölçülür. `stats.py`'deki
+  "821 maçın 123'ü" notu göç öncesi arşiv ölçümüdür, güncel oran değildir.
+- Yeniden başlatma ile ilk `InProgress` tick'i arasında canlı bir maç geçici olarak listede görünür;
+  aynı `matchId` ile devam ederse yeniden açılır ve bitişi görülürse `finalized` olarak verilir.
+- Ayrıntı, kaynak referansları ve bilinen ölçüm sınırları (sayaçlar en büyük değerle tutulur; okunamayan
+  sayaç `0` olur): `docs/zerozone-kacan-maclar.md`.
+
 ## 11. Konteyner yeniden oluşturma ve oyun güncellemesi
 
 ### 11.1 Konteyner yeniden oluşturuldu (`expected_container_id` değişir)

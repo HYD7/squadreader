@@ -51,6 +51,7 @@ TOKEN = "zz-export-test-token-" + "0123456789abcdef" * 2
 assert len(TOKEN) >= MIN_TOKEN_LEN
 
 EXPORT_PATHS = ["/export/v1/info", "/export/v1/health", "/export/v1/matches",
+                "/export/v1/unverified",
                 f"/export/v1/matches/{MATCH_IDS['A']}",
                 "/export/v1/recordings/whatever"]
 
