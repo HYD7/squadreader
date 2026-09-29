@@ -268,12 +268,36 @@ def _stub_meta(sqrx_path: Path, st: os.stat_result) -> dict:
     }
 
 
-_SQMAP_STRIP_SUFFIX_RE = re.compile(
-    r"(_Minimap(_Large)?|_Skirmish(_v\d+)?|_Seed(_v\d+)?|_RAAS(_v\d+)?|"
-    r"_AAS(_v\d+)?|_Invasion(_v\d+)?|_TC(_v\d+)?|_v\d+)+$",
+# One suffix atom at the END of the name. The previous pattern was
+# ``(A|B(_v\d+)?|...|_v\d+)+$``: a nested quantifier with overlapping
+# alternatives (``_TC_v1`` matches as ``_TC(_v1)`` *and* as ``_TC`` + ``_v1``), so a
+# tail that could not match made the regex engine backtrack exponentially — a
+# 146-character name held the HTTP thread for many seconds. The language is
+# unchanged (``X(_vN)?`` is just ``X`` followed by the ``_vN`` atom), but it is
+# now peeled one atom at a time by ``_strip_sqmap_suffixes`` (no nested
+# quantifier, bounded loop). Atoms are not suffixes of one another, so the last
+# atom is unique and peeling from the end equals the old leftmost match.
+_SQMAP_SUFFIX_ATOM_RE = re.compile(
+    r"(?:_Minimap(?:_Large)?|_(?:Skirmish|Seed|RAAS|AAS|Invasion|TC)|_v\d+)$",
     re.IGNORECASE,
 )
+# Real texture names are <= ~40 chars (Tallil_Outskirts_Minimap_Skirmish_v2 = 36).
+# The shortest atom is 3 chars (``_v1``), so 64 chars hold at most 21 atoms and
+# the strip loop bound below never truncates a real name.
+_SQMAP_MAX_NAME_LEN = 64
+_SQMAP_MAX_STRIPS = 32
 _SQMAP_FIRST_WORD_RE = re.compile(r"[A-Z][a-z]+|[a-z]+")
+
+
+def _strip_sqmap_suffixes(s: str) -> str:
+    """Peel trailing ``_Minimap[_Large]|_Skirmish|_Seed|_RAAS|_AAS|_Invasion|_TC|_vN``
+    atoms (case-insensitive), at most ``_SQMAP_MAX_STRIPS`` rounds. Linear."""
+    for _ in range(_SQMAP_MAX_STRIPS):
+        peeled = _SQMAP_SUFFIX_ATOM_RE.sub("", s, count=1)
+        if peeled == s:
+            break
+        s = peeled
+    return s
 
 
 def _resolve_sqmap(sqmaps_dir: Path, name: str) -> Optional[Path]:
@@ -298,6 +322,8 @@ def _resolve_sqmap(sqmaps_dir: Path, name: str) -> Optional[Path]:
     `<MapName>.webp` to upgrade resolution; slots (5) and (6) accept
     short user-aliases for compound names.
     """
+    if len(name) > _SQMAP_MAX_NAME_LEN:
+        return None
     # Some metadata texture values come pre-prefixed with T_ (Squad's
     # internal asset naming). Strip a leading T_ once and run the full
     # candidate ladder on the bare name too — that way the user's
@@ -305,7 +331,7 @@ def _resolve_sqmap(sqmaps_dir: Path, name: str) -> Optional[Path]:
     bare = name[2:] if name.startswith("T_") else name
 
     def variants(s: str) -> list[str | None]:
-        stripped = _SQMAP_STRIP_SUFFIX_RE.sub("", s)
+        stripped = _strip_sqmap_suffixes(s)
         m = _SQMAP_FIRST_WORD_RE.match(stripped)
         first_camel = m.group(0).lower() if m else None
         first_underscore = stripped.split("_")[0].lower() or None
@@ -667,7 +693,7 @@ def _make_handler(
                 if name.lower().endswith(ext):
                     name = name[: -len(ext)]
                     break
-            if not _SQMAP_NAME_RE.match(name):
+            if len(name) > _SQMAP_MAX_NAME_LEN or not _SQMAP_NAME_RE.match(name):
                 self.send_error(400, "bad sqmap name")
                 return
             path = _resolve_sqmap(sqmaps_dir, name)
