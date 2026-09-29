@@ -21,6 +21,7 @@ import { useKillFeed } from "../killfeed/useKillFeed";
 import { useReplayKillFeed } from "../killfeed/useReplayKillFeed";
 import { useViewerStore } from "../state/viewerStore";
 import { SourceLink } from "./SourceLink";
+import { MapNotice } from "./MapNotice";
 import { ZzMessage } from "./ZzMessage";
 import { useZzGate } from "./useZzGate";
 import { errorText, parseZzLocation, TR } from "./mode";
@@ -110,9 +111,14 @@ function Viewer() {
     <div id="root-grid">
       <div id="stage">
         <MapCanvas onHover={onHover} onLeave={onLeave} onClick={onClick} />
-        <TopBar />
-        <TeamBar />
-        <PlayerSearch />
+        {/* Desktop: `display: contents`, so the three keep their own absolute
+            positions. Narrow screens: one stacked column (see zz.css). */}
+        <div className="zz-topstack">
+          <TopBar />
+          <TeamBar />
+          <PlayerSearch />
+          <MapNotice />
+        </div>
         <BufferOverlay />
         <MatchOverlay />
         <Tooltip {...tooltip} />

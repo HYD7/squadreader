@@ -8,3 +8,152 @@
 .zz-screen {
   position: fixed; inset: 0; display: grid; place-items: center;
 }
+
+/* ---- Map notice: shown when there is no map picture for this replay ---- */
+.zz-map-notice {
+  position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%);
+  z-index: 6; pointer-events: none;
+  padding: 5px 12px; max-width: calc(100% - 32px);
+  font-size: 12px; color: var(--ink-mute);
+  background: var(--glass); border: 1px solid var(--glass-brd);
+  border-radius: var(--radius-chip); box-shadow: var(--shadow-sm);
+  text-align: center;
+}
+
+/* ---- Top group: HUD, controls, match strip, player search ----
+   Desktop: no box of its own, so the children keep their absolute positions
+   in the stage (the desktop layout is unchanged). */
+.zz-topstack { display: contents; }
+
+/* ---- Compact screens: phones in portrait (>= 360 px wide) and any screen
+   that is short (phones in landscape). One flex group at the top, one two-row
+   (portrait) or one-row (landscape) playback bar at the bottom, touch targets
+   of at least 40 px, nothing wider than the viewport. ---- */
+@media (max-width: 640px), (max-height: 480px) {
+  :root {
+    /* Space the bottom bar takes (bar + the source-link line under it). */
+    --zz-bottom-ui: 84px;
+  }
+
+  /* Top group ---------------------------------------------------------- */
+  .zz-topstack {
+    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px;
+    position: absolute; top: 8px; left: 8px; right: 8px;
+    z-index: 11; pointer-events: none;
+  }
+  .zz-topstack > #hud { display: none; }   /* map and date are in the match strip */
+  .zz-topstack > #controls,
+  .zz-topstack > #team-bar,
+  .zz-topstack > .player-search {
+    position: static; transform: none; margin: 0; box-sizing: border-box;
+    min-width: 0; max-width: none; width: auto;
+  }
+
+  .zz-topstack > #controls {
+    order: 2; flex: 1 1 auto; pointer-events: auto;
+    flex-wrap: wrap; justify-content: space-between; gap: 4px; padding: 4px;
+  }
+  .zz-topstack > #controls > span { display: none; }         /* zoom read-out */
+  .zz-topstack > #controls .clip-rec { display: none; }      /* screen capture: not for phones */
+  .zz-topstack > #controls > button,
+  .zz-topstack > #controls .settings-btn {
+    min-height: 40px; min-width: 40px; padding: 0 10px; font-size: 12px;
+    flex: 1 1 auto;
+  }
+  .zz-topstack > #controls .settings-wrap { flex: 0 0 auto; }
+  .zz-topstack > #controls .settings-btn { flex: none; width: 44px; height: 40px; }
+
+  .zz-topstack > #team-bar { order: 1; flex: 1 1 340px; padding: 6px 4px; }
+  .zz-topstack #team-bar .tb-team { min-width: 0; flex: 0 0 auto; padding: 0 6px; }
+  .zz-topstack #team-bar .tb-centre {
+    flex: 1 1 0; min-width: 0; padding: 0 8px; overflow: hidden;
+  }
+  .zz-topstack #team-bar .tb-map { max-width: 100%; }
+  .zz-topstack #team-bar .tb-ticketbar { width: 100%; }
+  .zz-topstack #team-bar .tb-clock { flex-wrap: nowrap; white-space: nowrap; }
+
+  .zz-topstack > .player-search {
+    order: 3; flex: 1 1 200px; position: relative; top: auto; right: auto;
+    pointer-events: auto;
+  }
+  .zz-topstack > .player-search .ps-input { min-height: 40px; box-sizing: border-box; }
+  .zz-topstack > .player-search .ps-input input { font-size: 16px; min-width: 0; }  /* no iOS zoom on focus */
+  .zz-topstack > .player-search .ps-clear { min-width: 32px; min-height: 32px; }
+  .zz-topstack > .player-search .ps-drop {
+    position: absolute; left: 0; right: 0; top: 100%;
+  }
+
+  /* Bottom playback bar ---------------------------------------------------- */
+  #stage #timeline-bar {
+    left: 8px; right: 8px; bottom: 26px; width: auto; transform: none;
+    box-sizing: border-box; padding: 6px; gap: 6px; flex-wrap: wrap;
+  }
+  #stage #timeline-bar .tb-btn {
+    min-height: 40px; min-width: 40px; padding: 0 6px; font-size: 12px;
+    white-space: nowrap; flex: 1 1 auto;
+  }
+  #stage #timeline-bar .tb-btn:first-child { flex: 0 0 44px; padding: 0; font-size: 15px; }
+  #stage #timeline-bar .tb-scrub {
+    flex: 1 1 120px; min-width: 0; margin: 0;
+    /* A 6 px track with a 40 px tall touch area around it. */
+    box-sizing: content-box; height: 6px; padding: 17px 0;
+    background-clip: content-box;
+  }
+  #stage #timeline-bar .tb-scrub::-webkit-slider-thumb { width: 24px; height: 24px; }
+  #stage #timeline-bar .tb-scrub::-moz-range-thumb { width: 24px; height: 24px; }
+  #stage #timeline-bar .tb-clock { min-width: 0; flex: 0 0 76px; white-space: nowrap; }
+  #stage #timeline-bar .tb-speeds {
+    flex: 1 1 auto; gap: 4px; border-left: 0; padding-left: 0; margin-left: 0;
+  }
+  #stage #timeline-bar .tb-spd {
+    flex: 1 1 0; min-width: 36px; min-height: 40px; padding: 0;
+    font-size: 12px; border-color: var(--glass-brd);
+  }
+
+  /* Panels and the kill feed sit above the bottom bar, not under the top group. */
+  #stage .detail-panel, #stage #vehicle-panel, #stage #player-panel {
+    top: auto; bottom: var(--zz-bottom-ui); left: 8px; right: auto;
+    width: min(360px, calc(100% - 16px)); max-height: 45%;
+  }
+  #stage #killfeed {
+    bottom: var(--zz-bottom-ui); right: 8px; width: min(380px, calc(100% - 16px));
+    max-width: none; max-height: 30%;
+  }
+  /* In the stacked group the notice is its last row, under the search. */
+  .zz-topstack > .zz-map-notice {
+    position: static; transform: none; order: 4; flex: 0 1 auto; margin: 0 auto;
+  }
+
+  /* The scoreboard's two team tables stack, and each scrolls sideways as one
+     piece (banner, column header, rows) instead of being cut off. */
+  #scoreboard .sb-cols { grid-template-columns: 1fr; grid-auto-rows: max-content; overflow-y: auto; }
+  #scoreboard .sb-col { overflow-x: auto; overflow-y: hidden; }
+  #scoreboard .sb-col > * { min-width: 600px; }
+}
+
+/* Portrait phones: the playback bar takes two rows (slider + clock, then the
+   buttons) and the top group stacks in full-width rows. */
+@media (max-width: 640px) and (min-height: 481px) {
+  :root { --zz-bottom-ui: 142px; }
+  .zz-topstack > #controls,
+  .zz-topstack > #team-bar,
+  .zz-topstack > .player-search { flex: 1 1 100%; }
+
+  #stage #timeline-bar .tb-scrub { order: 1; flex: 1 1 calc(100% - 88px); }
+  #stage #timeline-bar .tb-clock { order: 2; }
+  #stage #timeline-bar .tb-btn:first-child { order: 3; }
+  #stage #timeline-bar .tb-btn { order: 4; }
+  #stage #timeline-bar .tb-speeds { order: 6; flex: 2 1 auto; }
+}
+
+/* Landscape phones: the bar is one row; keep the top group to as few rows as
+   the width allows. */
+@media (max-height: 480px) {
+  .zz-topstack > #team-bar { flex: 1 1 360px; }
+  .zz-topstack > #controls { flex: 0 1 auto; }
+  .zz-topstack > .player-search { flex: 0 1 190px; }
+  #stage .detail-panel, #stage #vehicle-panel, #stage #player-panel {
+    width: min(340px, 45%); max-height: calc(100% - 150px);
+  }
+  #stage #killfeed { width: min(380px, 45%); }
+}

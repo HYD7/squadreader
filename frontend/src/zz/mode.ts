@@ -62,6 +62,7 @@ export const TR = {
   backTitle: "Maç sayfasına dön",
   source: "Kaynak kodu",
   frames: "kare",
+  mapMissing: "Bu harita için görsel bulunamadı",
 } as const;
 
 /** HTTP 404 → "Kayıt bulunamadı"; anything else (incl. network) → "Tekrar yüklenemedi". */

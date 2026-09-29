@@ -11,6 +11,9 @@ import type { Snapshot } from "../state/types";
 import { IS_ZZ } from "../zz/build";
 import { L } from "../zz/l";
 import { t } from "../zz/tr";
+import {
+  frameIndexAtOrAfter, idxToScrubValue, scrubMax, scrubPct, scrubSeekTarget,
+} from "./timelineMap";
 
 function fmtMMSS(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";
@@ -55,27 +58,17 @@ export function TimelineBar() {
 
   // ±N-second jump along the timestamp axis (not the index axis).
   const seekDeltaMs = (deltaMs: number) => {
-    const target = curMs + deltaMs;
-    // binary-search closest frame
-    let lo = 0, hi = lastIdx;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (snapMs(frames[mid]) < target) lo = mid + 1;
-      else hi = mid;
-    }
-    seekToIdx(lo);
+    seekToIdx(frameIndexAtOrAfter((i) => snapMs(frames[i]), frames.length,
+                                  curMs + deltaMs));
   };
 
+  // The slider value is the frame index itself (see timelineMap.ts), so a
+  // click, a drag and the arrow keys all land on exactly the frame they name,
+  // and the `change` that follows `input` is a no-op rather than a second seek.
   const onScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const pct = parseFloat(e.target.value);
-    const target = startMs + (pct / 100) * durationMs;
-    let lo = 0, hi = lastIdx;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (snapMs(frames[mid]) < target) lo = mid + 1;
-      else hi = mid;
-    }
-    seekToIdx(lo);
+    const target = scrubSeekTarget(e.target.value,
+      useViewerStore.getState().replay.currentIdx, frames.length);
+    if (target !== null) seekToIdx(target);
   };
 
   const togglePlay = () => {
@@ -94,8 +87,6 @@ export function TimelineBar() {
     setReplay((r) => ({ ...r, speed: sp, baseWallMs: 0, baseSnapMs: 0 }));
   };
 
-  const pct = (elapsedMs / durationMs) * 100;
-
   return (
     <div id="timeline-bar"
          title={L("tl.hint", "Space: play/pause · F: Fit map · Tab: scoreboard")}>
@@ -108,10 +99,10 @@ export function TimelineBar() {
       <button className="tb-btn" onClick={() => seekDeltaMs(30_000)}
               title={L("tl.forward", "forward 30s")}>{L("tl.forwardLabel", "30s ⏭")}</button>
       <input className="tb-scrub" type="range"
-             min={0} max={100} step={0.05}
-             value={pct} onChange={onScrub}
+             min={0} max={scrubMax(frames.length)} step={1}
+             value={idxToScrubValue(idx, frames.length)} onChange={onScrub}
              title={L("tl.scrub", "timeline (drag)")}
-             style={{ "--pct": `${pct}%` } as React.CSSProperties} />
+             style={{ "--pct": `${scrubPct(idx, frames.length)}%` } as React.CSSProperties} />
       <span className="tb-clock">
         {fmtMMSS(elapsedMs)} / {fmtMMSS(durationMs)}
       </span>
