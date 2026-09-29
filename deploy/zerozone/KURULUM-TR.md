@@ -449,7 +449,7 @@ Canlı sunucuda "denemek için" sürüm bozmayın; oyunun gerçek bir güncellem
    makinedeyse (mevcut site bir Windows VDS'te) ve WireGuard yoksa. Ayrı `server` bloğu ve ayrı alt alan
    adı kullanır; mevcut sitenin nginx/Caddy ayarına dokunmaz. Yalnız `/export/v1/` proxylenir
    (`/sr/7787/export/v1/...` -> `127.0.0.1:8787/export/v1/...`), `allow <ZZ_WEB_SUNUCUSU_IP>; deny all;`,
-   `proxy_buffering off` (yanıt akışı), 600 sn zaman aşımı, küçük `client_max_body_size` (8k), `limit_req`, yöntemler GET/HEAD/POST (POST yalnız `ack`/`control/recording`; diğer yollar 404),
+   `proxy_buffering off` (yanıt akışı), 600 sn zaman aşımı, küçük `client_max_body_size` (8k), `limit_req`, yöntemler GET/HEAD/POST (POST yalnız `/export/v1/ack` ve `/export/v1/control/recording`; GET yolları `info`, `health`, `matches`, `unverified`, `recordings`; diğer yollar 404),
    `Authorization` aynen iletilir, erişim logunda `Authorization` yazılmaz.
 
    ```bash
@@ -482,10 +482,21 @@ olarak alır. Örnek (yer tutucular):
 - Zero Zone istemcisi (`squad-server/lib/squadreader/net-guard.js`) yalnız özel ağ adreslerine
   izin verir; genel bir alt alan adı (yol 2) `allowHosts` içinde **birebir** yazılmalıdır. Yönlendirme
   (redirect) hata sayılır: nginx yönlendirme üretmemeli.
-- Zero Zone tarafındaki mod sırası `legacy` -> `shadow` (içe aktarır, gizli, ödül yok; ÖNERİLEN doğrulama dönemi) ->
-  `squadreader` (hedef: SquadReader tek istatistik ve EXP kaynağı). Kesinti tarihi (`cutoverAt`), tek anahtar
-  yapılandırması ve iki maç arasında yeniden başlatma Zero Zone deposunda `deploy/squadreader/KURULUM-TR.md`
-  bölüm 3.e-3.h ve `docs/squadreader/MIMARI.md`'dedir.
+- Zero Zone tarafındaki SIRA (bağlayıcı; ayrıntı Zero Zone deposunda `deploy/squadreader/KURULUM-TR.md` bölüm 3): (0) üretim
+  veritabanının KOPYASINDA MariaDB migration kuru koşusu (027-036; MariaDB >= 10.2.3; bu migration'lar MariaDB'de hiç
+  çalıştırılmadı), (1) taze yedek (bu rehberin bölüm 15.1 sırası: önce reader, sonra ZZ veritabanı), (2) kod, (3) `legacy` +
+  migration, (4) `shadow` (içe aktarır, gizli, ödül yok; ÖNERİLEN doğrulama dönemi), (5) `squadreader` (hedef: SquadReader tek
+  istatistik ve EXP kaynağı; kesinti tarihi `cutoverAt`, tek anahtar yapılandırması ve iki maç arasında yeniden başlatma). Geri alma
+  adımları aynı dizinde `GERI-ALMA-TR.md`'dedir (önce tüketiciyi config'ten çıkar, bekleyenleri işle, sonra `legacy`; migration
+  `down` çalıştırılmaz). **Zero Zone'da üretime kurulum ve üretim verisini değiştiren her adım kullanıcı onayı ister.**
+- **Her SquadJS süreci için benzersiz `server.id`; her süreç `sources` listesine yalnız KENDİ kaynağını yazar.** Bu okuyucu (7787)
+  yalnız 7787'yi yöneten SquadJS sürecinin `sources` girdisidir; 7788 okuyucusu açılırsa Zero Zone'da onun AYRI bir SquadJS süreci
+  (ayrı `config.json`, ayrı `server.id`, `localServerId: zz-7788`) olur. Aynı sunucu için iki SquadJS süreci çalıştırılmaz
+  (Zero Zone süreç kirası: `leaseTtlSec` 90, `leaseHeartbeatSec` 15).
+- Zero Zone eklenti seçenekleri (kod varsayılanlarıyla; hepsi Zero Zone deposundaki `squad-server/plugins/squadreader-sync.js`
+  `optionsSpecification` içindedir): `leaseTtlSec` 90, `leaseHeartbeatSec` 15, `deepReconcileEveryHours` 24 (0 kapatır),
+  `deepReconcileWindowDays` 14, `reconcileEveryRuns` 10, `reconcileWindowSec` 86400; `DiscordRoundEnded`:
+  `squadReaderStatsWaitSec` 1800, `squadReaderMatchWindowSec` 900, `legacyTimestampFix` false (kullanıcı kararı).
 - Zero Zone replay'i `ready` yaptıktan sonra kaydı bu okuyucuya `POST /export/v1/ack` ile ONAYLAR; retention yalnız
   onaylı kayıtları yaşa göre siler (bölüm 13). **Zero Zone tarafında replay anahtarı (`replaySecretFile`) yoksa
   hiçbir kayıt onaylanmaz ve bu makinenin diski dolabilir.**
@@ -586,7 +597,7 @@ sudo systemctl enable --now sqreader@7788.service
 
 Kendi `server_id`si (`zz-7788`), veri dizini, stats DB'si, token'ı ve HTTP portu (8788) vardır. 7787'nin
 dizinini ya da token'ını **paylaşmayın**: okuyucu başka `server_id`'nin verisi olan dizinde başlamayı reddeder.
-nginx'te 7788 bloğu yorumdadır (bölüm 10) ve Zero Zone'da ayrı bir `sources` girdisi gerekir.
+nginx'te 7788 bloğu yorumdadır (bölüm 10) ve Zero Zone'da 7788 için AYRI bir SquadJS süreci gerekir (kendi benzersiz `server.id`, kendi `config.json`, yalnız kendi kaynağını içeren `sources`; bölüm 10.2).
 
 ## 13. Kayıt saklama (retention)
 

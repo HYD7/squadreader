@@ -21,11 +21,15 @@
 # sunucu bloklarına dokunmayın. http {} bağlamında include edilmelidir
 # (limit_req_zone / log_format http düzeyindedir).
 #
-# Ne açılır: YALNIZ /export/v1/ yolu (GET/HEAD + POST: son sürümde POST yalnız
-# /export/v1/ack ve /export/v1/control/recording içindir; sqreader/export_state.py,
-# çalışma ağacında, ad son sürümde doğrulanmalı). Reader'ın diğer tüm
-# yolları (/api/*, /health, /health/deep, /viewer-next...) DIŞARI AÇILMAZ:
-# eşleşmeyen her yol 404 döner.
+# Ne açılır: YALNIZ /export/v1/ yolu (kaynak: sqreader/export_api.py, bu dosya
+# yazılırken depoda doğrulandı):
+#   GET/HEAD  info, health, matches, matches/<id>, unverified, recordings/<id>
+#   POST      yalnız /export/v1/ack ve /export/v1/control/recording
+#             (export_api.py _POST_PATHS; gövde en çok 4096 bayt, MAX_BODY_BYTES;
+#             ack listesi ve kayıt anahtarı durumu sqreader/export_state.py ile
+#             veri dizinindeki dosyalarda tutulur)
+# Reader'ın diğer tüm yolları (/api/*, /health, /health/deep, /viewer-next...)
+# DIŞARI AÇILMAZ: eşleşmeyen her yol 404 döner.
 #
 # Çoklu örnek: yalnız 7787 açıktır. 7788 için blok yorumdadır; 7788 bilinçli
 # olarak açılınca yorumu kaldırın (Zero Zone tarafında baseUrl'e yol ön eki yazılır:
@@ -60,8 +64,8 @@ server {
     allow <ZZ_WEB_SUNUCUSU_IP>;
     deny  all;
 
-    # Küçük istek gövdesi: GET gövdesiz; POST (ack/control) gövdesi en çok 4 KB
-    # (reader tarafı sınırı, config örneği açıklaması). 8k güvenli üst sınırdır.
+    # Küçük istek gövdesi: GET gövdesiz; POST (ack/control) gövdesi en çok 4096 bayt
+    # (reader tarafı sınırı: export_api.py MAX_BODY_BYTES). 8k güvenli üst sınırdır.
     client_max_body_size 8k;
 
     # Eşleşmeyen her yol 404 (reader'ın diğer yolları dışarı açılmaz).
