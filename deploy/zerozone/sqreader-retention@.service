@@ -2,20 +2,31 @@
 #
 # UYARI: bu iş kayıt (.sqrx + .meta.json) dosyalarını SİLER. Export API açıkken
 # (bu dağıtımda açık) retention YALNIZ Zero Zone'un onayladığı (POST /export/v1/ack)
-# kayıtları yaş/boyut kuralıyla siler; onaylanmamış kayıt yalnız disk ACİL
-# durumunda (boş alan --min-free-gb altına inince) en eskiden silinir ve denetim
-# günlüğüne yazılır (sqreader/export_state.py başlık açıklaması, çalışma ağacında).
-# Zero Zone henüz ack göndermiyorsa yaş kuralı HİÇBİR ŞEY silmez: bu güvenli
-# yöndür ama disk dolabilir; KURULUM-TR.md bölüm 13. Aktif kayıt (son
-# --in-progress-min dakikada değişen) ve en yeni --min-keep kayıt korunur.
-# Zamanlayıcıyı etkinleştirmeden önce KURULUM-TR.md bölüm 13'teki
-# `sqreader retention --dry-run` komutuyla neyin silineceğine bakın.
+# bitmiş kayıtları yaş/boyut kuralıyla siler; onaylanmamış kayıt yalnız disk ACİL
+# durumunda (boş alan retention_min_free_gb altına inince) en eskiden silinir ve
+# denetim günlüğüne (export_audit.log) yazılır (sqreader/export_state.py başlık
+# açıklaması). Zero Zone replay anahtarı (replaySecretFile) yoksa HİÇBİR kayıt
+# onaylanmaz: yaş kuralı hiçbir şey silmez, güvenli yöndür ama disk dolabilir;
+# KURULUM-TR.md bölüm 13. Aktif kayıt (son --in-progress-min dakikada değişen) ve
+# boş alan kuralında en yeni --min-keep kayıt korunur.
 #
-# DOĞRULANMADI: retention ayar adları SON SÜRÜMDE doğrulanmalı. Aşağıdaki seçenekler
-# (--max-age-days, --min-free-gb, --min-keep) `sqreader/cli.py` build_parser'daki
-# `retention` alt komutunda bugün vardır; komut paralel görevle değişiyor
-# (yeni: --require-ack, --state-dir, config retention_* anahtarları). Sayılar
-# yer tutucudur (kodun kendi varsayılanlarıyla aynı), ÖLÇÜLMEDİ.
+# UYARI: PARAMETRESİZ `sqreader retention --recordings-dir <DİZİN>` ARTIK config
+# varsayılanlarıyla (retention_*) SİLER; upstream varsayılanı 0 = kapalı idi.
+# Zamanlayıcıyı etkinleştirmeden önce KURULUM-TR.md bölüm 13'teki `--dry-run`
+# komutuyla neyin silineceğine bakın.
+#
+# Retention bayrakları (sqreader/cli.py build_parser `retention`; verilmeyen sınır
+# ilgili config anahtarından gelir): --recordings-dir (ZORUNLU), --max-age-days
+# (retention_max_age_days), --max-total-gb (retention_max_total_gb), --min-free-gb
+# (retention_min_free_gb), --in-progress-min (retention_in_progress_min),
+# --min-keep (retention_min_keep), --require-ack / --no-require-ack
+# (retention_require_ack), --include-unverified (retention_include_unverified),
+# --unverified-max-age-days (retention_unverified_max_age_days), --state-dir
+# (export_state_dir), --dry-run.
+# Aşağıdaki komut --max-age-days, --min-free-gb ve --min-keep bayraklarını açıkça
+# verir; değerler kodun varsayılanlarıyla aynıdır (90 gün, 5 GB, 3 kayıt) ve
+# ÖLÇÜLMEDİ. Kalan sınırlar (max_total_gb, in_progress_min, require_ack,
+# unverified) config'ten gelir (SQREADER_CONFIG).
 # systemd-analyze verify: çalıştırılmadı (Linux host gerekli).
 
 [Unit]

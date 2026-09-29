@@ -11,6 +11,13 @@ kendi SQLite veritabanına istatistik yazar ve Zero Zone'un çektiği salt-okunu
 > **burada çalıştırılmadı**. Doğrulanmayan her nokta "DOĞRULANMADI" ya da
 > "çalıştırılmadı: Linux host gerekli" diye işaretlidir; tam liste bölüm 18'de.
 > Komutlardaki `<...>` yer tutucudur: gerçek değerleri siz yazarsınız.
+>
+> **Zero Zone ile birlikte doğrulama.** Canlıda yapılacak doğrulamaların TAMAMI (Linux host, ağ,
+> veritabanı, veri anlamı, site, geçiş provası) Zero Zone deposunda
+> `docs/squadreader/CANLI-DOGRULAMA.md` içinde toplanmıştır; bu rehberdeki `dogrula.sh`
+> bölümlerinin o listeyle eşlemesi bölüm 18.1'dedir. Hedef kurulumda SquadReader Zero Zone'un
+> TEK istatistik ve EXP kaynağıdır ve **yedek motor yoktur** (bölüm 9): okuyucu durursa istatistik
+> ve EXP üretilmez.
 
 ## İçindekiler
 
@@ -121,10 +128,11 @@ rehberde denenmedi.) İsteğe bağlı ek paketler (`[push]` = `cryptography`, `[
 | Çalışma zamanı | sürekli | **hiçbiri** | dış ağ **yok** |
 
 Çalışma zamanı güvencesi üç katmandır: (1) config `net_policy: "local-only"` ve boş
-`net_allow_hosts` (bu iki anahtarı okuyan kod çalışma ağacında var, `sqreader/config.py:70-71`,
-`sqreader/cli.py:3133-3136`; **commit'lenmemiş olabilir**: commit sonrası doğrulanmalı; eski
-sürüm bilinmeyen anahtarı yok sayar), (2) unit'teki `SQREADER_NET_POLICY=local-only` ortam değişkeni
-(`sqreader/netpolicy.py`, şimdiden geçerli), (3) isteğe bağlı güvenlik duvarı:
+`net_allow_hosts` (varsayılanları `sqreader/config.py` DEFAULTS'ta, `net_policy: "local-only"`,
+`net_allow_hosts: []`; her komuttan önce `sqreader/cli.py` içinde `netpolicy.configure(...)`
+ile uygulanır ve geçersiz değerde Türkçe hata verip çıkar; `SQREADER_NET_POLICY` /
+`SQREADER_NET_ALLOW_HOSTS` ortam değişkenleri bu anahtarlara ÜSTÜN gelir), (2) unit'teki `SQREADER_NET_POLICY=local-only` ortam değişkeni
+(`sqreader/netpolicy.py`), (3) isteğe bağlı güvenlik duvarı:
 
 ```bash
 # ÖRNEK, SINANMADI (çalıştırılmadı: Linux host gerekli): sqreader kullanıcısının yalnız
@@ -203,10 +211,16 @@ python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))" && e
 | `squad_port` / `squad_query_port` | `7787` / `null` | 7787'nin oyunun `-Port=` mu `-QueryPort=` mu olduğu **DOĞRULANMADI**. `sudo ./dogrula.sh 7787` bölüm 3 bunu gösterir; `QueryPort` ise değerleri değiştirin. İkisi de doluysa ikisi de eşleşmeli. |
 | `expected_container_id` | `null` | İsteğe bağlı ek güvence; bölüm 11. |
 | `log_path_in_container` / `log_path` | `null` | Varsayılan konteyner içi log: `/home/container/SquadGame/Saved/Logs/SquadGame.log` (`sqreader/discovery.py`, `DEFAULT_LOG_PATH_IN_CONTAINER`). Farklıysa yazın. |
-| `net_policy` / `net_allow_hosts` | `"local-only"` / `[]` | Çalışma ağacında var (yukarıda 3.4), commit sonrası doğrulanmalı. |
-| `update_enabled` / `offset_autoheal` | `false` / `false` | Çalışma ağacında kod varsayılanı da `false`; upstream'de `true` idi. Örnek config açıkça `false` verir, bu yüzden kod ne olursa olsun kapalıdır. |
-| `export_state_dir` | `null` | `export_state.json`, `export_audit.log`, `retention_state.json` yeri; `null` = kayıt dizininin üst dizini (`/var/lib/sqreader/7787`). `sqreader/export_state.py` çalışma ağacında; ad **son sürümde doğrulanmalı**. |
-| `retention_*` | kod varsayılanları | Bölüm 13. Ad ve değerler **son sürümde doğrulanmalı**, yer tutucudur. |
+| `net_policy` / `net_allow_hosts` | `"local-only"` / `[]` | Dış ağ politikası (`sqreader/netpolicy.py`). `local-only`: yalnız loopback, özel ağ ve `net_allow_hosts`'ta birebir yazılan adresler; `allow-central` upstream davranışını (enroll, push, güncelleme) açar ve açıkça seçilmelidir. Geçersiz değerde okuyucu HATA verip çıkar (çıkış kodu 2). `SQREADER_NET_POLICY` / `SQREADER_NET_ALLOW_HOSTS` ortam değişkenleri config'e üstündür (3.4). |
+| `update_enabled` / `offset_autoheal` | `false` / `false` | Bu çatalda kod varsayılanı da `false` (`sqreader/config.py`); upstream'de `true` idi. Örnek config açıkça `false` verir. |
+| `export_state_dir` | `null` | `export_state.json`, `export_audit.log`, `retention_state.json` yeri (`sqreader/export_state.py`: `STATE_FILE`, `AUDIT_FILE`, `RETENTION_STATE_FILE`); `null` = kayıt dizininin üst dizini (`/var/lib/sqreader/7787`). `retention --state-dir` bunu ezer. |
+| `retention_max_age_days` | `90` | Onaylı (ack) ve bitmiş kayıtlar bu yaştan sonra silinir (0 = kapalı). |
+| `retention_max_total_gb` | `150` | Kayıt dizini bu boyuta sığana dek en eskiler silinir (0 = kapalı). |
+| `retention_min_free_gb` | `5` | Boş alan tabanı: altında DİSK ACİL DURUMU (en eskiler silinir, onaysızlar en sonda); hiçbir şey silinemiyorsa YENİ KAYIT AÇILMAZ (`recordingEnabledReason=disk_low`). |
+| `retention_in_progress_min` | `60` | Son N dakikada değişen dosyaya (etkin kayıt) dokunulmaz. |
+| `retention_min_keep` | `3` | Boş alan kuralında en yeni N bitmiş kayıt korunur. |
+| `retention_require_ack` | `null` | `null` = Export API açıksa ack ZORUNLU; `true`/`false` zorlar. |
+| `retention_include_unverified` / `retention_unverified_max_age_days` | `false` / `180` | Doğrulanmamış/legacy kayıtlar yalnız `true` ve bu yaştan eskiyse silinir. |
 | `push_enabled`, `central_url`, `push_replay`, `alert_replay_base`, `alert_webhook`, `plugins_config` | `false`/`null` | Dış hedef yok. |
 | `export_token_file` | `/etc/sqreader/7787.export-token` | Token'ın kendisi değil, yolu. |
 
@@ -398,6 +412,9 @@ push yok), bu yüzden beklenen davranış **görünür durma**dır, sessiz yanl�
    `STALE` döner (`sqreader/httpsrv.py`, `_handle_health`).
 4. Yeni maç **kaydedilmez** (okuyucu okuyamıyor). Mevcut, bitmiş kayıtlar ve istatistikler
    Export API'den servis edilmeye devam eder.
+   **Zero Zone `squadreader` modundaysa (hedef kurulum) bu süre boyunca o sunucu için istatistik ve EXP
+   ÜRETİLMEZ ve kaçan maçlar sonradan gelmez: yedek motor yoktur** (Zero Zone `docs/squadreader/KARARLAR.md`
+   bölüm 1.4). SR'nin `finalized` yapamadığı maç Export API'de yer almaz.
 5. Zero Zone tazelik göstergesi "bayat/çevrimdışı" olur (`freshness.js`, varsayılan 10 dk).
 
 Nasıl gözlenir:
@@ -465,8 +482,13 @@ olarak alır. Örnek (yer tutucular):
 - Zero Zone istemcisi (`squad-server/lib/squadreader/net-guard.js`) yalnız özel ağ adreslerine
   izin verir; genel bir alt alan adı (yol 2) `allowHosts` içinde **birebir** yazılmalıdır. Yönlendirme
   (redirect) hata sayılır: nginx yönlendirme üretmemeli.
-- Başlangıç modu `shadow` (içe aktarır, gizli, ödül yok) önerilir; kesinti tarihi (`cutoverAt`) ve `squadreader`
-  moduna geçiş Zero Zone belgelerindedir (`docs/squadreader/MIMARI.md`).
+- Zero Zone tarafındaki mod sırası `legacy` -> `shadow` (içe aktarır, gizli, ödül yok; ÖNERİLEN doğrulama dönemi) ->
+  `squadreader` (hedef: SquadReader tek istatistik ve EXP kaynağı). Kesinti tarihi (`cutoverAt`), tek anahtar
+  yapılandırması ve iki maç arasında yeniden başlatma Zero Zone deposunda `deploy/squadreader/KURULUM-TR.md`
+  bölüm 3.e-3.h ve `docs/squadreader/MIMARI.md`'dedir.
+- Zero Zone replay'i `ready` yaptıktan sonra kaydı bu okuyucuya `POST /export/v1/ack` ile ONAYLAR; retention yalnız
+  onaylı kayıtları yaşa göre siler (bölüm 13). **Zero Zone tarafında replay anahtarı (`replaySecretFile`) yoksa
+  hiçbir kayıt onaylanmaz ve bu makinenin diski dolabilir.**
 - Zero Zone `/tekrar` hız sınırı `request.ip` ile çalışır; ters proxy arkasında `trustProxy` kapalıysa tüm
   ziyaretçiler tek IP görünür. Zero Zone'un web sunucusunu yapılandırırken buna dikkat edin.
 
@@ -547,26 +569,53 @@ nginx'te 7788 bloğu yorumdadır (bölüm 10) ve Zero Zone'da ayrı bir `sources
 Okuyucu bitmiş kayıtları (`.sqrx` + `.meta.json`) kendiliğinden silmez; disk dolmasın diye günlük bir iş vardır
 (`sqreader-retention@.timer`). **Bu iş kayıt dosyalarını SİLER.**
 
-Çalışma ağacındaki sürümün (`sqreader/export_state.py` başlık açıklaması, `sqreader/config.py`) kuralları:
+> **UYARI: parametresiz `sqreader retention --recordings-dir <DIZIN>` artık config varsayılanlarıyla SİLER.**
+> Upstream sürümde `--max-age-days`, `--max-total-gb` ve `--min-free-gb` varsayılanı 0 (kapalı) idi, yani
+> parametresiz çağrı hiçbir şey silmezdi. Bu çatalda bayrak verilmeyen her sınır `retention_*` config
+> anahtarından gelir (varsayılanlar: 90 gün, 150 GB, 5 GB boş alan). Bir bayrak verilirse yalnız o sınır ezilir.
+> Neyi sileceğini görmek için HER ZAMAN önce `--dry-run` kullanın.
 
+Kurallar (`sqreader/export_state.py` başlık açıklaması, `sqreader/cli.py` `cmd_retention`, `sqreader/config.py`):
+
+- Yalnız **bitmiş (finalized)** kayıtlar aday olur; etkin kayıt, doğrulanmamış/legacy kayıtlar (`--include-unverified` ve
+  kendi daha uzun yaş sınırı olmadıkça) ve sidecar'ı okunamayanlar asla silinmez. Son `--in-progress-min` dakikada
+  değişen dosyaya dokunulmaz; bir `.sqrx` daima `.meta.json`'ıyla birlikte ve çökmeye dayanıklı silinir; yalnız
+  `--recordings-dir` içindeki düz dosyalar silinir.
 - Export API **açıkken** (bu dağıtımda açık) yaş ve boyut kuralları yalnız Zero Zone'un **onayladığı**
-  (`POST /export/v1/ack`) finalize kayıtları siler. Onaylanmamış kayıt yalnız disk **acil durumunda**
-  (boş alan `retention_min_free_gb` altına inince) en eskiden silinir; her böyle silme günlüğe ve
-  denetim kaydına (`export_audit.log`) yazılır.
-- **Zero Zone tarafında ack çağrısı henüz yoksa** (`squad-server/lib/squadreader/client.js` içinde ack metodu
-  bulunmuyor; Zero Zone tarafı ayrıca doğrulanmalı) yaş/boyut kuralı **hiçbir şey silmez**. Bu güvenli yöndür
-  (Zero Zone çekmeden kayıt silinmez) ama disk dolabilir: `dogrula.sh` bölüm 7'yi ve `/export/v1/health`'i izleyin;
-  `retention_min_free_gb` altında ve hiçbir şey silinemiyorsa **yeni kayıt açılmaz** (istatistik ve oyun etkilenmez).
-- Aktif kayıt (son `retention_in_progress_min` = 60 dk içinde değişen) ve en yeni `retention_min_keep` (3) kayıt
-  korunur; doğrulanmamış/legacy kayıtlar varsayılan olarak silinmez.
+  (`POST /export/v1/ack`) kayıtları siler. Onaylanmamış kayıt yalnız disk **acil durumunda** (boş alan
+  `retention_min_free_gb` altına inince) en eskiden silinir; her böyle silme günlüğe ve denetim kaydına
+  (`export_audit.log`) yazılır, `health` içinde `degradedReasons` `unacked_deleted` görünür.
+- **Zero Zone artık ack gönderir** (replay `ready` olup commit edildikten sonra; Zero Zone deposunda
+  `squad-server/lib/squadreader/client.js` `ackRecordings`). Ancak Zero Zone'da replay anahtarı yoksa replay işleme
+  kapalıdır ve HİÇBİR kayıt onaylanmaz: bu durumda yaş/boyut kuralı **hiçbir şey silmez** (güvenli yön: Zero Zone
+  çekmeden kayıt silinmez) ama **disk dolabilir**. `dogrula.sh` bölüm 7'yi ve `/export/v1/health`'i (`disk`,
+  `pendingAck`, `degradedReasons`) izleyin; `retention_min_free_gb` altında ve hiçbir şey silinemiyorsa **yeni kayıt
+  açılmaz** (istatistik ve oyun etkilenmez).
+- Boş alan kuralında en yeni `retention_min_keep` (3) bitmiş kayıt korunur.
 
-> **Retention ayar adları son sürümde doğrulanmalıdır.** Unit'teki komut bugün `sqreader/cli.py`
-> `retention` alt komutunda var olan seçenekleri kullanır (`--max-age-days`, `--min-free-gb`, `--min-keep`);
-> komut ve `retention_*` config anahtarları paralel görevle değişiyor (`--require-ack`, `--state-dir`, ...). Sayılar
-> (`90` gün, `5` GB, `3` kayıt) **yer tutucudur**, kodun kendi varsayılanlarıdır, ölçülmedi.
+**`retention` bayrakları** (`sqreader/cli.py` `build_parser`; hepsi isteğe bağlıdır, verilmezse ilgili `retention_*` config anahtarı):
+
+| Bayrak | Config anahtarı | Anlam |
+|---|---|---|
+| `--recordings-dir` (ZORUNLU) | yok | Kayıt dizini |
+| `--max-age-days` | `retention_max_age_days` | Bu yaştan eski onaylı bitmiş kayıtları sil (0 = kapalı) |
+| `--max-total-gb` | `retention_max_total_gb` | Dizin bu boyuta sığana dek en eskileri sil (0 = kapalı) |
+| `--min-free-gb` | `retention_min_free_gb` | Boş alan tabanı; altı DİSK ACİL DURUMU (0 = kapalı) |
+| `--in-progress-min` | `retention_in_progress_min` | Son N dakikada değişene dokunma |
+| `--min-keep` | `retention_min_keep` | En yeni N kaydı koru (boş alan kuralında) |
+| `--require-ack` / `--no-require-ack` | `retention_require_ack` | Yalnız onaylı kayıtları sil / onayı bekleme (verilmezse: Export API açıksa açık) |
+| `--include-unverified` | `retention_include_unverified` | Doğrulanmamış/legacy kayıtları da (kendi yaş sınırıyla) sil |
+| `--unverified-max-age-days` | `retention_unverified_max_age_days` | Doğrulanmamış kayıtlar için yaş sınırı |
+| `--state-dir` | `export_state_dir` | `export_state.json` / `export_audit.log` / `retention_state.json` yeri (yoksa `--recordings-dir`'in üst dizini) |
+| `--dry-run` | yok | Hiçbir şey silmez; ne silineceğini ve nedenini yazar |
+
+`retention` hiçbir şey eşleşmese de 0 çıkış kodu verir (systemd zamanlayıcısı yeşil kalsın diye). Sayılar (`90` gün,
+`150` GB, `5` GB, `3` kayıt, `60` dk, `180` gün) kodun kendi varsayılanlarıdır ve **ölçülmedi**: disk boyutunuza göre
+ayarlayın. Unit (`sqreader-retention@.service`) `--max-age-days 90 --min-free-gb 5 --min-keep 3` bayraklarını açıkça verir
+(kod varsayılanlarıyla aynı değerler); diğer sınırlar config'ten gelir.
 
 ```bash
-# Önce silmeden bakın:
+# Önce silmeden bakın (unit ile aynı bayraklar):
 sudo -u sqreader env SQREADER_CONFIG=/etc/sqreader/7787.config.json   /opt/sqreader/venv/bin/sqreader retention   --recordings-dir /var/lib/sqreader/7787/recordings   --max-age-days 90 --min-free-gb 5 --min-keep 3 --dry-run
 
 # Uygun bulursanız zamanlayıcıyı YALNIZ 7787 için açın:
@@ -624,8 +673,8 @@ sudo /opt/sqreader/src/deploy/zerozone/yedek-geri-al.sh yedek 7787 /var/backups/
 
 Yedek içeriği: `stats/player_stats.db` (`sqlite3 .backup` ile **tutarlı kopya**, düz `cp` değil; sonra
 `PRAGMA integrity_check`), yalnız **finalize** kayıtlar (`.sqrx` + `.meta.json`; aktif kayıt kopyalanmaz),
-`export_state.json` / `export_audit.log` / `retention_state.json` (varsa; `sqreader/export_state.py` çalışma ağacında,
-**adlar son sürümde doğrulanmalı**), config
+`export_state.json` / `export_audit.log` / `retention_state.json` (varsa; adlar `sqreader/export_state.py` `STATE_FILE`, `AUDIT_FILE`,
+`RETENTION_STATE_FILE`), config
 (`/etc/sqreader/7787.config.json`, `.env`), `MANIFEST.txt` ve `SHA256SUMS`. **Token yedeğe alınmaz**
 (kaybolursa bölüm 5.1 ile yenisi üretilir ve Zero Zone'da güncellenir). `--token-yedekle` verilirse token ayrı `SIR/`
 dizinine ve uyarıyla kopyalanır; o yedeği şifreli/kısıtlı yerde tutun.
@@ -713,12 +762,35 @@ kurulumda sırayla yapılmalıdır:
 | 10 | Loopback bağlama ve dış bağlantı yokluğu | `dogrula.sh` bölüm 10; nftables örneği (bölüm 3.4) SINANMADI |
 | 11 | `MemoryDenyWriteExecute`, `SystemCallFilter` uyumu | bölüm 7.4 (kullanılmıyor) |
 | 12 | Kaynak sınırları (`CPUQuota`, `MemoryMax`, `Nice`) | bölüm 14 (ölçülmedi) |
-| 13 | Retention ayar adlarının son sürümde doğruluğu ve neyi sileceği; Zero Zone ack davranışı | `--dry-run` (bölüm 13) |
+| 13 | Retention'ın gerçek kayıtlarda neyi sileceği; Zero Zone'un gerçek ack davranışı (ayar adları kaynakta doğrulandı, bölüm 13) | `--dry-run` (bölüm 13); `GET /export/v1/health` `pendingAck` |
 | 14 | `yedek-geri-al.sh` gerçek `sqlite3`/`systemctl`/`runuser` ile | bölüm 15 (yalnız sahte araçlarla denendi) |
 | 15 | `setpriv` ile yetenek kümesi kurulumu (`dogrula.sh`) | `dogrula.sh` bölüm 5 (`CapEff` denetimi) |
-| 16 | `net_policy`/`net_allow_hosts`, `export_state_dir`, `retention_*` anahtarlarının commit'lenmiş son sürümde varlığı ve adları | `dogrula.sh` bölüm 10 `ATLANDI` verirse anahtar config'te/kodda yok; `git diff` ile kaynak |
+| 16 | `net_policy`/`net_allow_hosts` ve `retention_*` anahtarlarının gerçek host'ta beklenen etkisi (anahtar adları ve varsayılanlar kaynakta doğrulandı) | `dogrula.sh` bölüm 10 |
 | 17 | Zero Zone'un yedek sırası senaryolarında davranışı | Zero Zone tarafında (bölüm 15.1) |
 | 18 | Uyumsuz oyun sürümünde "kayıt durur, görünür hata" | gerçek bir oyun güncellemesinden sonra (bölüm 9) |
+
+### 18.1 `dogrula.sh` ve Zero Zone canlı doğrulama listesi
+
+Zero Zone deposundaki `docs/squadreader/CANLI-DOGRULAMA.md` canlıda yapılacak doğrulamaların TEK listesidir; bu tablo
+`dogrula.sh` çıktı bölümlerinin o listedeki maddelerle eşlemesidir. `dogrula.sh` yalnız bu makineyi (oyun host'u) kapsar;
+ağ, veritabanı, veri anlamı, site ve geçiş provası maddeleri Zero Zone tarafındadır.
+
+| `dogrula.sh` bölümü | CANLI-DOGRULAMA.md maddesi |
+|---|---|
+| 1. İşletim sistemi / çekirdek | A8 (systemd unit, sözdizimi) |
+| 2. `ptrace_scope` ve `/proc` görünürlüğü | A4 |
+| 3. Oyun süreçleri (PID, `Port=`/`QueryPort=`, konteyner) | A1, A2, A7 |
+| 4. `/proc/<pid>/root` altında log erişimi | A8 |
+| 5. `version` / `doctor` / `summary` / `selftest` (yetenekler) | A3, A5 |
+| 6. Oyun sürümü / bellek düzeni uyumu | A6 |
+| 7. Disk alanı | A12, B7 (ack ve SR diski) |
+| 8. systemd unit durumu | A8 |
+| 9. Export API (`info`, `health`, kimliksiz 401) | B3, B4 |
+| 10. Dış ağ politikası | B6 |
+
+`dogrula.sh`'in kapsamadığı ve Zero Zone listesinde olan maddeler: A9 (kaynak ölçümü, bölüm 14), A10 (ilk gerçek maç
+`finalized`), A11 (reader yeniden başlaması ve `unverified` maç), B1/B2/B5 (ağ yolu, TLS, yönlendirme), C (veritabanı),
+D (veri anlamı: EOS, kills/deaths, revive yönü, kazanan, oynama süresi, komutan), E (site), F (geçiş provası).
 
 ## 19. Lisans notu
 

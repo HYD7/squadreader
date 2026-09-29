@@ -45,9 +45,13 @@
   "log_path": null,
 
   "_net_comment": [
-    "Calisma zamaninda dis ag YOK. BEKLEYEN: net_policy/net_allow_hosts anahtarlarini",
-    "okuyan kod (G2.3) henuz son surumde olmayabilir; bilinmeyen anahtar yok sayilir.",
-    "Unit ayrica SQREADER_NET_POLICY=local-only ortam degiskenini verir."
+    "Calisma zamaninda dis ag YOK. net_policy / net_allow_hosts anahtarlari sqreader/",
+    "netpolicy.py politikasini belirler: 'local-only' (varsayilan) yalniz loopback/ozel ag",
+    "adreslerine ve net_allow_hosts'ta birebir yazilanlara izin verir; 'allow-central' upstream",
+    "davranisini acar ve ACIKCA secilmelidir. Gecersiz deger reader baslarken HATA verip cikar",
+    "(cikis kodu 2). SQREADER_NET_POLICY / SQREADER_NET_ALLOW_HOSTS ortam degiskenleri bu",
+    "anahtarlara USTUNDUR; unit SQREADER_NET_POLICY=local-only verir, yani politika",
+    "config dosyasindan bagimsiz da gecerlidir."
   ],
   "net_policy": "local-only",
   "net_allow_hosts": [],
@@ -84,18 +88,20 @@
   "_export_state_comment": [
     "export_state_dir: export_state.json (kayit anahtari + Zero Zone onaylari),",
     "export_audit.log ve retention_state.json'in yeri. null = kayit dizininin UST dizini",
-    "(/var/lib/sqreader/7788). Yedek bu dosyalari da alir. BEKLEYEN/DOGRULANMALI: bu anahtar",
-    "paralel gorevle ekleniyor; commit sonrasi sqreader/export_state.py ile dogrulayin."
+    "(/var/lib/sqreader/7788). Yedek bu dosyalari da alir. `sqreader retention --state-dir` bunu ezer."
   ],
   "export_state_dir": null,
 
   "_retention_comment": [
     "Kayit saklama anahtarlari (sqreader retention ve kaydedicinin disk-dusuk korumasi).",
-    "RETENTION AYAR ADLARI SON SURUMDE DOGRULANMALI: sqreader/config.py'de calisma agacinda",
-    "var, commit'lenmemis olabilir. Degerler kodun varsayilanlaridir, OLCULMEDI: disk boyutuna",
-    "gore ayarlayin. retention_require_ack null = Export API aciksa yalniz Zero Zone'un",
-    "onayladigi (ack) kayitlar yas/boyut kuraliyla silinir. 0 = sinir kapali.",
-    "retention_min_free_gb altinda ve bir sey silinemiyorsa YENI KAYIT ACILMAZ (istatistik ve oyun etkilenmez)."
+    "Degerler kodun varsayilanlaridir (sqreader/config.py), OLCULMEDI: disk boyutuna gore ayarlayin.",
+    "0 = sinir kapali. retention_require_ack null = Export API aciksa yalniz Zero Zone'un",
+    "onayladigi (ack) bitmis kayitlar yas/boyut kuraliyla silinir; Zero Zone replay anahtari yoksa",
+    "HICBIR kayit onaylanmaz ve disk dolabilir. UYARI: parametresiz `sqreader retention`",
+    "artik bu degerlerle SILER (upstream varsayilani 0 = kapali idi); once --dry-run.",
+    "retention_min_free_gb altinda ve bir sey silinemiyorsa YENI KAYIT ACILMAZ",
+    "(istatistik ve oyun etkilenmez). retention_min_keep bos alan kuralinda en yeni N bitmis",
+    "kaydi korur. retention_include_unverified=true olmadikca dogrulanmamis kayitlar silinmez."
   ],
   "retention_max_age_days": 90,
   "retention_max_total_gb": 150,

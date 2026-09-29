@@ -10,13 +10,15 @@ dış ağa çıkmadan çalıştırmak için dosyalar. Adım adım rehber: **[KUR
 | Dosya | Ne işe yarar |
 |---|---|
 | `sqreader@.service` | Örnek başına okuyucu unit'i (örnek adı = oyun portu). Yalnız `sqreader@7787` etkinleştirilir. |
-| `sqreader-retention@.service`, `sqreader-retention@.timer` | Günlük kayıt saklama (eski kayıtları siler; dikkatli okuyun). |
-| `sqreader.7787.config.json.example` | 7787 için config (`server_id: zz-7787`, yerel ağ politikası, push/güncelleme kapalı). |
+| `sqreader-retention@.service`, `sqreader-retention@.timer` | Günlük kayıt saklama. **Kayıtları SİLER**: Export API açıkken yalnız Zero Zone'un onayladığı (ack) bitmiş kayıtları yaş/boyut kuralıyla siler; parametresiz `sqreader retention` artık `retention_*` config varsayılanlarıyla siler (KURULUM-TR.md bölüm 13). Önce `--dry-run`. |
+| `sqreader.7787.config.json.example` | 7787 için config (`server_id: zz-7787`, `net_policy: local-only`, push/güncelleme kapalı, `export_token_file`, `export_state_dir`, `retention_*`). |
 | `sqreader.7788.config.json.example` | 7788 için config. 7788 **varsayılan olarak açılmaz**. |
 | `nginx-export.conf.example` | Zero Zone web sunucusunun Export API'ye TLS + IP izin listesiyle ulaşması için örnek (yalnız `/export/v1/`). |
-| `dogrula.sh` | Salt-okunur teşhis: `sudo ./dogrula.sh 7787`. Hiçbir şeyi değiştirmez. |
+| `dogrula.sh` | Salt-okunur teşhis: `sudo ./dogrula.sh 7787`. Hiçbir şeyi değiştirmez. Bölümlerinin Zero Zone `docs/squadreader/CANLI-DOGRULAMA.md` maddeleriyle eşlemesi: KURULUM-TR.md bölüm 18.1. |
 | `yedek-geri-al.sh` | `yedek <port> <dizin>` ve `geri-al <port> <yedek> [--dry-run]`. |
 | `KURULUM-TR.md` | Kurulum, yetkiler, doğrulama, bakım, kaldırma. |
+
+Bu okuyucu Zero Zone'un **tek istatistik ve EXP kaynağıdır** (kullanıcı kararı 2026-09-29; Zero Zone `docs/squadreader/KARARLAR.md`). Okuyucu durursa (ör. oyun güncellemesi sonrası) Zero Zone o sunucu için istatistik ve EXP üretmez; yedek motor yoktur. Canlıda yapılacak doğrulamaların tamamı Zero Zone deposunda `docs/squadreader/CANLI-DOGRULAMA.md` içindedir.
 
 Değişmeyen kurallar: `--pid` kullanılmaz; HTTP yalnız `127.0.0.1`; token dosyada
 (`/etc/sqreader/<port>.export-token`, 0600), config'te değil; oyun sunucusu/konteyneri
