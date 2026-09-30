@@ -94,8 +94,19 @@ MIN_TOKEN_LEN = 32
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
 #: POST bodies are tiny JSON objects; anything bigger is refused unread (413).
+#: This is the limit of the control endpoint. The ack endpoint has its own,
+#: larger one (ACK_MAX_BODY_BYTES) because a full batch of real recording ids
+#: does not fit into 4 KiB.
 MAX_BODY_BYTES = 4096
 MAX_ACK_RECORDINGS = 100
+#: Longest recording id the ack endpoint accepts (same bound as REC_ID_RE and
+#: the per-id length check in `_ack`).
+MAX_REC_ID_LEN = 200
+#: Ack body limit: MAX_ACK_RECORDINGS ids of the longest permitted length is
+#: 100 * (200 + 2 quotes) + 99 commas + 17 bytes of envelope = 20316 bytes
+#: compact, 20415 with ", " separators, ~20.9k pretty-printed; 24 KiB covers all
+#: of them with room to spare while staying small enough to refuse unread.
+ACK_MAX_BODY_BYTES = 24576
 _CONTROL_PATH = "/export/v1/control/recording"
 _ACK_PATH = "/export/v1/ack"
 _POST_PATHS = (_CONTROL_PATH, _ACK_PATH)
@@ -345,7 +356,15 @@ class ExportApi:
         self._degraded_reasons = degraded_reasons
         self._clock = clock if clock is not None else time.time
 
-    max_body_bytes = MAX_BODY_BYTES
+    #: The largest body ANY POST endpoint accepts. The transport (httpsrv) reads
+    #: up to this many bytes; the per-endpoint limit (`body_limit`) is enforced
+    #: here, so the control endpoint stays at MAX_BODY_BYTES.
+    max_body_bytes = ACK_MAX_BODY_BYTES
+
+    @staticmethod
+    def body_limit(path: str) -> int:
+        """Largest request body the POST endpoint at `path` accepts."""
+        return ACK_MAX_BODY_BYTES if path == _ACK_PATH else MAX_BODY_BYTES
 
     def __repr__(self) -> str:  # the token must not leak through a stray repr
         return f"ExportApi(server_id={self.server_id!r})"
@@ -662,7 +681,8 @@ class ExportApi:
 
     @staticmethod
     def _read_body(body: Optional[bytes], content_type: Optional[str],
-                   content_length: Optional[int]
+                   content_length: Optional[int],
+                   limit: int = MAX_BODY_BYTES
                    ) -> tuple[Optional[dict], Optional[ExportResponse]]:
         """The JSON object of a POST body, or the error response to send."""
         ctype = (content_type or "").split(";", 1)[0].strip().lower()
@@ -670,7 +690,7 @@ class ExportApi:
             return None, _error(415, "unsupported_media_type")
         if content_length is None:
             return None, _error(411, "length_required")
-        if content_length > MAX_BODY_BYTES:
+        if content_length > limit:
             return None, _error(413, "payload_too_large")
         if body is None or len(body) != content_length:
             return None, _error(400, "bad_body")
@@ -727,7 +747,8 @@ class ExportApi:
     def _ack(self, body: Optional[bytes], content_type: Optional[str],
              content_length: Optional[int], client_ip: Optional[str]
              ) -> ExportResponse:
-        obj, err = self._read_body(body, content_type, content_length)
+        obj, err = self._read_body(body, content_type, content_length,
+                                   ACK_MAX_BODY_BYTES)
         if err is not None or obj is None:
             return err or _error(400, "bad_json")
         if "recordings" not in obj:
@@ -739,7 +760,7 @@ class ExportApi:
             return _error(400, "bad_recordings")
         if len(ids) > MAX_ACK_RECORDINGS:
             return _error(400, "too_many_recordings")
-        if not all(isinstance(i, str) and 0 < len(i) <= 200 for i in ids):
+        if not all(isinstance(i, str) and 0 < len(i) <= MAX_REC_ID_LEN for i in ids):
             return _error(400, "bad_recordings")
         accepted: list[str] = []
         rejected: list[str] = []

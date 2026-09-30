@@ -162,9 +162,24 @@ DEFAULTS: dict[str, Any] = {
     # this is true AND they are older than retention_unverified_max_age_days.
     "retention_include_unverified": False,
     "retention_unverified_max_age_days": 180,
+
+    # Zero Zone deployment guard: when true, `serve` REFUSES to start unless at
+    # least one target criterion is configured (squad_port, squad_query_port or
+    # expected_container_id), exit code 2. Without a criterion the reader picks
+    # "the only SquadGameServer there is", which on a host with a second (not yet
+    # migrated) server is a coin toss. null (default) = require it exactly when
+    # the Export API is configured (export_token_file / --export-token-file
+    # set), i.e. in every Zero Zone deployment and nowhere else; true / false
+    # force it. Stock upstream behaviour (no criteria needed) is unchanged.
+    "require_target": None,
 }
 
 _cache: dict[str, Any] | None = None
+
+
+class ConfigError(Exception):
+    """The config file exists but cannot be used (unreadable / not a JSON
+    object). Operator-facing message; the CLI turns it into exit code 2."""
 
 
 def _load() -> dict[str, Any]:
@@ -175,14 +190,25 @@ def _load() -> dict[str, Any]:
     env = os.environ.get("SQREADER_CONFIG")
     path = Path(env) if env else Path.cwd() / "sqreader.config.json"
     if path.is_file():
+        # A file that is THERE but cannot be used must not silently become "all
+        # defaults": that would drop squad_port and the reader would attach to
+        # whichever game server it finds first. (A file that does not exist at
+        # all keeps the zero-config behaviour: stock upstream needs no config,
+        # and Zero Zone's `serve` refuses to run without a target criterion.)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                # Skip `_comment` annotation keys used in the example file.
-                cfg.update({k: v for k, v in data.items()
-                            if not k.startswith("_")})
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as e:      # includes UnicodeDecodeError
+            raise ConfigError(
+                f"yapılandırma dosyası okunamadı / ayrıştırılamadı: {path} "
+                f"({type(e).__name__}: {e}). Varsayılanlara DÖNÜLMEZ; dosyayı "
+                f"düzeltin. / config file unreadable or not valid JSON; "
+                f"refusing to fall back to defaults.") from e
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"yapılandırma dosyası bir JSON nesnesi olmalı: {path}. / "
+                f"config file must be a JSON object.")
+        # Skip `_comment` annotation keys used in the example file.
+        cfg.update({k: v for k, v in data.items() if not k.startswith("_")})
     _cache = cfg
     return cfg
 
@@ -190,6 +216,33 @@ def _load() -> dict[str, Any]:
 def get(key: str) -> Any:
     """Config value for ``key`` (config file overrides the built-in default)."""
     return _load().get(key, DEFAULTS.get(key))
+
+
+def require_target_enabled(export_token_file: Any = None) -> bool:
+    """Whether `serve` must refuse to start without a target criterion.
+
+    `require_target` true / false wins; null means "exactly when the Export API
+    is configured" (the CLI flag ``export_token_file`` or the config key).
+    """
+    forced = get("require_target")
+    if forced is not None:
+        return bool(forced)
+    return bool(export_token_file or get("export_token_file"))
+
+
+def require_target_criteria() -> None:
+    """Raise ``discovery.DiscoveryConfigError`` unless the config names at least
+    one target criterion (game port, query port or container id)."""
+    crit = discovery_criteria()
+    discovery.require_target_criteria(
+        game_port=crit["game_port"], query_port=crit["query_port"],
+        expected_container_id=crit["expected_container_id"])
+
+
+def check_instance(instance: str) -> None:
+    """Raise ``discovery.DiscoveryConfigError`` unless the systemd instance name
+    is the game port the config names (`sqreader@7787` <-> squad_port 7787)."""
+    discovery.check_instance_port(instance, get("squad_port"))
 
 
 def _has_game_port(args: list[str], port: int) -> bool:

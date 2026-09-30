@@ -81,7 +81,7 @@
   "_export_comment": [
     "Export API v1 token'i BU DOSYADA DEGIL; yalniz dosya yolu. 7787'nin token'ini",
     "PAYLASMAYIN: her ornegin kendi token'i vardir.",
-    "Uretim: openssl rand -hex 32 | sudo -u sqreader tee /etc/sqreader/7788.export-token"
+    "Uretim (root olusturur, sonra sahibi sqreader olur; /etc/sqreader root'a aittir): sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/sqreader/7788.export-token'"
   ],
   "export_token_file": "/etc/sqreader/7788.export-token",
 

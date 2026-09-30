@@ -25,7 +25,8 @@
 # yazılırken depoda doğrulandı):
 #   GET/HEAD  info, health, matches, matches/<id>, unverified, recordings/<id>
 #   POST      yalnız /export/v1/ack ve /export/v1/control/recording
-#             (export_api.py _POST_PATHS; gövde en çok 4096 bayt, MAX_BODY_BYTES;
+#             (export_api.py _POST_PATHS; gövde en çok 4096 bayt (control,
+#             MAX_BODY_BYTES) ve 24576 bayt (ack, ACK_MAX_BODY_BYTES: 100 kimlik);
 #             ack listesi ve kayıt anahtarı durumu sqreader/export_state.py ile
 #             veri dizinindeki dosyalarda tutulur)
 # Reader'ın diğer tüm yolları (/api/*, /health, /health/deep, /viewer-next...)
@@ -64,9 +65,12 @@ server {
     allow <ZZ_WEB_SUNUCUSU_IP>;
     deny  all;
 
-    # Küçük istek gövdesi: GET gövdesiz; POST (ack/control) gövdesi en çok 4096 bayt
-    # (reader tarafı sınırı: export_api.py MAX_BODY_BYTES). 8k güvenli üst sınırdır.
-    client_max_body_size 8k;
+    # Küçük istek gövdesi: GET gövdesiz; POST gövdesi reader tarafında uç başına
+    # sınırlıdır (export_api.py): control en çok 4096 bayt (MAX_BODY_BYTES), ack en
+    # çok 24576 bayt (ACK_MAX_BODY_BYTES; 100 kimlik x en uzun izinli kimlik 200
+    # karakter ~20,4 KB). nginx sınırı bunun ÜSTÜNDE olmalı, yoksa nginx büyük ack
+    # paketini reader'a hiç iletmeden 413 verir: 32k.
+    client_max_body_size 32k;
 
     # Eşleşmeyen her yol 404 (reader'ın diğer yolları dışarı açılmaz).
     location / {

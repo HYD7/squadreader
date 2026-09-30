@@ -750,6 +750,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     no game process exists the reader waits with a bounded back-off and reports
     that state instead of crashing.
     """
+    # Zero Zone deployment (Export API configured, or `require_target: true`):
+    # no target criterion = no start. Exit code 2 with a clear message (main()
+    # turns the DiscoveryConfigError into it), never an attach to "the only
+    # SquadGameServer found".
+    if config.require_target_enabled(getattr(args, "export_token_file", None)):
+        config.require_target_criteria()
     stats_db = getattr(args, "stats_db", None)
     if stats_db:
         discovery.check_stats_db_server_id(Path(stats_db).expanduser(),
@@ -1699,6 +1705,16 @@ def _serve_once(args: argparse.Namespace) -> int:
         print(f"sqrx:   {args.sqrx_out} ({on_disk/1024:.1f} KiB, "
               f"{sqrx_raw_bytes/1024:.1f} KiB raw, "
               f"{ratio:.1f}x compression)", file=sys.stderr)
+    return 0
+
+
+def cmd_check_instance(args: argparse.Namespace) -> int:
+    """`check-instance <port>`: the systemd instance name (`sqreader@7787`) must
+    equal the game port in the config. Used by the unit's ExecStartPre; the
+    instance name is one argv word, never a shell string. Exit 0 = equal,
+    2 = mismatch / missing (main() prints the reason)."""
+    config.check_instance(args.instance)
+    print(f"tamam: örnek {args.instance} = config squad_port")
     return 0
 
 
@@ -2965,6 +2981,14 @@ def build_parser() -> argparse.ArgumentParser:
                               "Off by default — nothing leaves the box.")
     p_serve.set_defaults(func=cmd_serve)
 
+    p_ci = sub.add_parser(
+        "check-instance",
+        help="exit 0 only if <instance> (a systemd unit instance name, the game "
+             "port) equals squad_port in the config; else exit 2 (used by "
+             "sqreader@.service ExecStartPre)")
+    p_ci.add_argument("instance", help="systemd instance name, e.g. 7787")
+    p_ci.set_defaults(func=cmd_check_instance)
+
     p_backfill = sub.add_parser(
         "stats-backfill",
         help="replay finished .sqrx recordings into the player-stats DB "
@@ -3123,6 +3147,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except config.ConfigError as e:
+        # A config file that exists but cannot be used: stop, never run on
+        # defaults (that could attach to the wrong game server).
+        print(f"HATA: {e}", file=sys.stderr)
+        return 2
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
     # The network policy comes from the config before ANY command runs, so no

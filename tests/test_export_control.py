@@ -12,7 +12,8 @@ Status codes pinned here (also the contract for the Zero Zone panel):
   400 bad_query                a query string on a POST
   415 unsupported_media_type   Content-Type is not application/json
   411 length_required          no Content-Length (e.g. chunked)
-  413 payload_too_large        Content-Length above 4096 (the body is not used)
+  413 payload_too_large        Content-Length above the endpoint limit (the body is
+                               not used): 4096 control, 24576 ack
   400 bad_json                 not UTF-8 JSON / not an object / duplicate key / NaN
   400 unknown_key              a key other than the documented ones
   400 bad_enabled | bad_actor | bad_reason | bad_recordings | too_many_recordings
@@ -39,7 +40,14 @@ from zz_fixture import MATCH_IDS, SERVER_A_ID, SERVER_B_ID, build_zz_fixture
 from sqreader import netpolicy
 from sqreader import recorder as _recorder
 from sqreader import sqrx as _sqrx
-from sqreader.export_api import MAX_BODY_BYTES, SCHEMA_EXPORT, ExportApi
+from sqreader.export_api import (
+    ACK_MAX_BODY_BYTES,
+    MAX_ACK_RECORDINGS,
+    MAX_BODY_BYTES,
+    MAX_REC_ID_LEN,
+    SCHEMA_EXPORT,
+    ExportApi,
+)
 from sqreader.export_state import (
     AUDIT_FILE,
     STATE_FILE,
@@ -134,8 +142,12 @@ def health(port):
 
 def raw_post(port, head_lines: list[bytes], body: bytes = b"") -> int:
     """A POST with hand-made headers (urllib always adds Content-Length)."""
+    return raw_post_to(port, CONTROL, head_lines, body)
+
+
+def raw_post_to(port, path: str, head_lines: list[bytes], body: bytes = b"") -> int:
     with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
-        s.sendall(b"POST " + CONTROL.encode() + b" HTTP/1.1\r\nHost: x\r\n"
+        s.sendall(b"POST " + path.encode() + b" HTTP/1.1\r\nHost: x\r\n"
                   b"Authorization: Bearer " + TOKEN.encode() + b"\r\n"
                   + b"".join(h + b"\r\n" for h in head_lines)
                   + b"Connection: close\r\n\r\n" + body)
@@ -560,7 +572,7 @@ def test_ack_validation(fx):
     srv, port, _ = start(fx)
     try:
         assert http(port, ACK, body={"recordings": ["a"]}, ctype="text/plain")[0] == 415
-        assert http(port, ACK, body=b"x" * (MAX_BODY_BYTES + 1))[0] == 413
+        assert http(port, ACK, body=b"x" * (ACK_MAX_BODY_BYTES + 1))[0] == 413
         for body, code in [
             ({}, "bad_recordings"),
             ({"recordings": []}, "bad_recordings"),
@@ -580,6 +592,76 @@ def test_ack_validation(fx):
                                     {"recordings": [f"r{i}" for i in range(100)]})
         assert status == 200 and len(obj["rejected"]) == 100 and obj["accepted"] == []
         assert audit_lines(fx / SERVER_A_ID) == []          # nothing acked, nothing logged
+    finally:
+        stop(srv)
+
+
+REAL_ID = "2026-05-25_002432_Gorodok_RAAS_v1_40323435"       # 42 chars, a real shape
+
+
+def _ack_body(ids, pad_to=None) -> bytes:
+    raw = json.dumps({"recordings": ids}).encode()
+    if pad_to is not None:
+        assert len(raw) <= pad_to
+        raw += b" " * (pad_to - len(raw))                   # trailing JSON whitespace
+    return raw
+
+
+def test_ack_body_limit_covers_a_full_batch_of_the_longest_ids():
+    longest = "x" * MAX_REC_ID_LEN
+    ids = [longest] * MAX_ACK_RECORDINGS
+    for kwargs in ({}, {"separators": (",", ":")}, {"indent": 2}, {"indent": 4}):
+        assert len(json.dumps({"recordings": ids}, **kwargs).encode()
+                   ) <= ACK_MAX_BODY_BYTES, kwargs
+    # the control endpoint's limit did not grow
+    assert MAX_BODY_BYTES == 4096
+    assert ExportApi.body_limit(ACK) == ACK_MAX_BODY_BYTES
+    assert ExportApi.body_limit(CONTROL) == MAX_BODY_BYTES
+    assert ExportApi.max_body_bytes == ACK_MAX_BODY_BYTES    # what the transport reads
+
+
+def test_ack_takes_100_realistic_long_ids(fx):
+    ids = [f"{REAL_ID[:-8]}{i:08d}" for i in range(MAX_ACK_RECORDINGS)]
+    assert len(ids) == 100 and len(_ack_body(ids)) > MAX_BODY_BYTES     # the old bug
+    srv, port, _ = start(fx)
+    try:
+        status, obj, _h = post_json(port, ACK, {"recordings": ids})
+        assert status == 200 and len(obj["rejected"]) == 100 and obj["accepted"] == []
+        # the longest permitted ids, 100 of them
+        longest = [f"{i:03d}" + "y" * (MAX_REC_ID_LEN - 3) for i in range(100)]
+        status, obj, _h = post_json(port, ACK, {"recordings": longest})
+        assert status == 200 and len(obj["rejected"]) == 100
+        # 101 ids are refused by the count, not by the size
+        status, obj, _h = post_json(port, ACK, {"recordings": ids + [REAL_ID]})
+        assert (status, obj["error"]) == (400, "too_many_recordings")
+        status, obj, _h = post_json(port, ACK, {"recordings": longest + ["z" * 200]})
+        assert (status, obj["error"]) == (400, "too_many_recordings")
+    finally:
+        stop(srv)
+
+
+def test_ack_body_size_boundary_and_control_keeps_the_small_limit(fx):
+    srv, port, _ = start(fx)
+    try:
+        at_limit = _ack_body([REAL_ID], pad_to=ACK_MAX_BODY_BYTES)
+        assert len(at_limit) == ACK_MAX_BODY_BYTES
+        assert http(port, ACK, body=at_limit)[0] == 200
+        over = _ack_body([REAL_ID], pad_to=ACK_MAX_BODY_BYTES + 1)
+        assert http(port, ACK, body=over)[0] == 413
+        # the connection is answered (not reset) for a much bigger declared body too
+        assert http(port, ACK, body=b" " * 200_000)[0] == 413
+        # chunked / no length is still refused on ack
+        assert raw_post_to(port, ACK, [b"Content-Type: application/json",
+                                       b"Transfer-Encoding: chunked"],
+                           b"0\r\n\r\n") == 411
+        # control did NOT inherit the ack limit
+        good = {"enabled": True, "reason": "", "actor": "zz-admin-1"}
+        padded = json.dumps(good).encode()
+        padded += b" " * (MAX_BODY_BYTES + 1 - len(padded))
+        assert http(port, CONTROL, body=padded)[0] == 413
+        padded = json.dumps(good).encode()
+        padded += b" " * (MAX_BODY_BYTES - len(padded))
+        assert http(port, CONTROL, body=padded)[0] == 200
     finally:
         stop(srv)
 

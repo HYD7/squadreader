@@ -182,11 +182,19 @@ yazma izni yoktur.
 Gerçek token hiçbir dosyada/depoda yoktur; makinede üretilir:
 
 ```bash
-openssl rand -hex 32 | sudo -u sqreader tee /etc/sqreader/7787.export-token >/dev/null
+# /etc/sqreader root'a ait 0755 dizindir: sqreader kullanıcısı orada dosya OLUŞTURAMAZ
+# (eski `sudo -u sqreader tee` komutu "Permission denied" verirdi). Dosyayı root
+# oluşturur; umask 077 sayesinde daha ilk anda 0600'dür, sonra sahibi devredilir.
+# Token komut satırında görünmez (openssl kabuğun içinde çalışır, çıktı dosyaya
+# yönlenir) ve kabuk geçmişine sır girmez (komutun içinde token yoktur).
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/sqreader/7787.export-token'
 sudo chown sqreader:sqreader /etc/sqreader/7787.export-token
 sudo chmod 0600 /etc/sqreader/7787.export-token
-sudo stat -c '%a %U %n' /etc/sqreader/7787.export-token   # 600 sqreader ...
+sudo stat -c '%a %U:%G %n' /etc/sqreader/7787.export-token   # 600 sqreader:sqreader ...
+sudo -u sqreader test -r /etc/sqreader/7787.export-token && echo "sqreader okuyabiliyor"
 ```
+
+Aynı komut token'ı **döndürmek** için de kullanılır (dosyanın içeriğini yeniden yazar; bölüm 10.3).
 
 `openssl rand -hex 32` 64 karakter üretir (en az 32 gerekir; kısa/boş dosya = API kapalı,
 `/export/v1/*` 404). Token'ı ekrana yazdırmayın, kabuk geçmişine koymayın, sohbete/e-postaya
@@ -199,7 +207,8 @@ sudo install -m 0640 -o root -g sqreader \
   /opt/sqreader/src/deploy/zerozone/sqreader.7787.config.json.example \
   /etc/sqreader/7787.config.json
 sudoedit /etc/sqreader/7787.config.json
-python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))" && echo "JSON geçerli"
+# Dosya root:sqreader 0640: sıradan kullanıcı okuyamaz, bu yüzden sqreader olarak denetleyin.
+sudo -u sqreader python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))" && echo "JSON geçerli"
 ```
 
 Örnekteki anahtarlar ve anlamları (hepsi `sqreader/config.py` DEFAULTS'ta ya da
@@ -208,7 +217,7 @@ python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))" && e
 | Anahtar | Değer | Not |
 |---|---|---|
 | `server_id` | `zz-7787` | Veri bölümleme anahtarı. Başka `server_id`'nin verisi olan dizinde okuyucu **başlamaz** (`discovery.check_stats_db_server_id`). |
-| `squad_port` / `squad_query_port` | `7787` / `null` | 7787'nin oyunun `-Port=` mu `-QueryPort=` mu olduğu **DOĞRULANMADI**. `sudo ./dogrula.sh 7787` bölüm 3 bunu gösterir; `QueryPort` ise değerleri değiştirin. İkisi de doluysa ikisi de eşleşmeli. |
+| `squad_port` / `squad_query_port` | `7787` / `null` | **Zero Zone kipinde (Export API açık) `squad_port`, `squad_query_port` ya da `expected_container_id`'den EN AZ BİRİ ZORUNLUDUR:** hiçbiri yoksa `serve` başlamayı reddeder (çıkış kodu 2, "hedef ölçütü yok"); reader 7788'e (henüz devredilmemiş sunucuya) "bulduğum tek süreç" diye bağlanmaz. `require_target` (`null` = Export API açıksa zorunlu; `true`/`false` zorlar) bunu değiştirir. Ayrıca unit'in `ExecStartPre=sqreader check-instance %i` adımı örnek adının (`sqreader@7787`) `squad_port` ile AYNI olduğunu denetler; uyuşmazsa ya da `squad_port` yoksa servis başlamaz. Config dosyası VAR ama bozuksa (geçersiz JSON, okunamıyor) reader varsayılana dönmez, HATA verip çıkar (kod 2). 7787'nin oyunun `-Port=` mu `-QueryPort=` mu olduğu **DOĞRULANMADI**. `sudo ./dogrula.sh 7787` bölüm 3 bunu gösterir; `QueryPort` ise değerleri değiştirin. İkisi de doluysa ikisi de eşleşmeli. |
 | `expected_container_id` | `null` | İsteğe bağlı ek güvence; bölüm 11. |
 | `log_path_in_container` / `log_path` | `null` | Varsayılan konteyner içi log: `/home/container/SquadGame/Saved/Logs/SquadGame.log` (`sqreader/discovery.py`, `DEFAULT_LOG_PATH_IN_CONTAINER`). Farklıysa yazın. |
 | `net_policy` / `net_allow_hosts` | `"local-only"` / `[]` | Dış ağ politikası (`sqreader/netpolicy.py`). `local-only`: yalnız loopback, özel ağ ve `net_allow_hosts`'ta birebir yazılan adresler; `allow-central` upstream davranışını (enroll, push, güncelleme) açar ve açıkça seçilmelidir. Geçersiz değerde okuyucu HATA verip çıkar (çıkış kodu 2). `SQREADER_NET_POLICY` / `SQREADER_NET_ALLOW_HOSTS` ortam değişkenleri config'e üstündür (3.4). |
@@ -256,6 +265,13 @@ journalctl -u sqreader@7787 -f
 
 **`sqreader@7788` için `enable` YAPILMAZ.** Şablon aynıdır ama ikinci sunucu ancak bilinçli
 kararla, kendi config'i/veri dizini/token'ı ile açılır (bölüm 12).
+
+**Örnek adı ve config eşitliği.** Unit `ExecStartPre=sqreader check-instance %i` adımıyla örnek adının (`sqreader@7787`) config'teki `squad_port` ile AYNI olduğunu denetler; uyuşmazsa (7788 config'i ile 7787 örneği ya da tersi), config'te `squad_port` yoksa ya da config dosyası bozuksa servis BAŞLAMAZ (çıkış kodu 2, Türkçe neden). Elle deneme (ÇALIŞTIRILMADI: Linux host gerekli):
+
+```bash
+sudo -u sqreader env SQREADER_CONFIG=/etc/sqreader/7787.config.json /opt/sqreader/venv/bin/sqreader check-instance 7787; echo "çıkış=$?"   # 0
+sudo -u sqreader env SQREADER_CONFIG=/etc/sqreader/7787.config.json /opt/sqreader/venv/bin/sqreader check-instance 7788; echo "çıkış=$?"   # 2 (uyuşmuyor)
+```
 
 `systemctl stop sqreader@7787` okuyucuyu durdurur; oyun sunucusuna hiçbir etkisi yoktur.
 Unit `Restart=on-failure`, `RestartSec=20`, 15 dakikada en çok 5 başlatma (`StartLimit*`)
@@ -449,7 +465,7 @@ Canlı sunucuda "denemek için" sürüm bozmayın; oyunun gerçek bir güncellem
    makinedeyse (mevcut site bir Windows VDS'te) ve WireGuard yoksa. Ayrı `server` bloğu ve ayrı alt alan
    adı kullanır; mevcut sitenin nginx/Caddy ayarına dokunmaz. Yalnız `/export/v1/` proxylenir
    (`/sr/7787/export/v1/...` -> `127.0.0.1:8787/export/v1/...`), `allow <ZZ_WEB_SUNUCUSU_IP>; deny all;`,
-   `proxy_buffering off` (yanıt akışı), 600 sn zaman aşımı, küçük `client_max_body_size` (8k), `limit_req`, yöntemler GET/HEAD/POST (POST yalnız `/export/v1/ack` ve `/export/v1/control/recording`; GET yolları `info`, `health`, `matches`, `unverified`, `recordings`; diğer yollar 404),
+   `proxy_buffering off` (yanıt akışı), 600 sn zaman aşımı, küçük `client_max_body_size` (32k; reader ack gövdesi en çok 24576 bayt, control 4096 bayt), `limit_req`, yöntemler GET/HEAD/POST (POST yalnız `/export/v1/ack` ve `/export/v1/control/recording`; GET yolları `info`, `health`, `matches`, `unverified`, `recordings`; diğer yollar 404),
    `Authorization` aynen iletilir, erişim logunda `Authorization` yazılmaz.
 
    ```bash
@@ -554,7 +570,7 @@ Doluysa: konteyner yeniden oluşturulunca kimlik değişir; güncelleninceye kad
 ```bash
 sudo /opt/sqreader/src/deploy/zerozone/dogrula.sh 7787 --hizli    # bölüm 3: yeni konteyner kimliği
 sudoedit /etc/sqreader/7787.config.json                            # expected_container_id: yeni 12+ karakter
-python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))"
+sudo -u sqreader python3 -c "import json; json.load(open('/etc/sqreader/7787.config.json'))"
 sudo systemctl restart sqreader@7787                               # yalnız reader; oyun etkilenmez
 ```
 
@@ -589,7 +605,8 @@ Güncelleme boyunca oyun sunucusu **yeniden başlatılmaz**, tickrate değiştir
 ```bash
 sudo install -d -m 0750 -o sqreader -g sqreader /var/lib/sqreader/7788 /var/lib/sqreader/7788/stats /var/lib/sqreader/7788/recordings
 sudo install -m 0640 -o root -g sqreader /opt/sqreader/src/deploy/zerozone/sqreader.7788.config.json.example /etc/sqreader/7788.config.json
-openssl rand -hex 32 | sudo -u sqreader tee /etc/sqreader/7788.export-token >/dev/null && sudo chmod 0600 /etc/sqreader/7788.export-token
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/sqreader/7788.export-token'
+sudo chown sqreader:sqreader /etc/sqreader/7788.export-token && sudo chmod 0600 /etc/sqreader/7788.export-token
 printf 'SQREADER_HTTP_PORT=8788\n' | sudo tee /etc/sqreader/7788.env >/dev/null
 # 7788'in Port= mu QueryPort= mu olduğunu dogrula.sh 7788 ile görüp config'i düzeltin, sonra:
 sudo systemctl enable --now sqreader@7788.service
@@ -803,6 +820,10 @@ kurulumda sırayla yapılmalıdır:
 | 16 | `net_policy`/`net_allow_hosts` ve `retention_*` anahtarlarının gerçek host'ta beklenen etkisi (anahtar adları ve varsayılanlar kaynakta doğrulandı) | `dogrula.sh` bölüm 10 |
 | 17 | Zero Zone'un yedek sırası senaryolarında davranışı | Zero Zone tarafında (bölüm 15.1) |
 | 18 | Uyumsuz oyun sürümünde "kayıt durur, görünür hata" | gerçek bir oyun güncellemesinden sonra (bölüm 9) |
+| 19 | `ExecStartPre=sqreader check-instance %i`: yanlış örnek adı/config ile servis başlamıyor (çıkış 2); bozuk config JSON'u varsayılana dönmüyor | bölüm 6; gerçek systemd gerekir (mantık `tests/test_zz_target_guard.py` ile sınandı) |
+| 20 | Ölçütsüz `serve` (Export API açık, `squad_port`/`squad_query_port`/`expected_container_id` yok) çıkış 2 ile reddediliyor; `require_target` davranışı | bölüm 5.2 (anahtar tablosu); gerçek host |
+| 21 | Token üretim komutu (`sudo sh -c 'umask 077; openssl rand -hex 32 > ...'`), izinler ve `sqreader` kullanıcısının okuyabilmesi | bölüm 5.1 (Linux host, sudo/chown) |
+| 22 | nginx `client_max_body_size 32k` ile 100 kimlikli ack paketinin (ZZ tarafında en çok 3800 bayt; reader sınırı 24576) 200 dönmesi ve control isteğinin (<= 4096 bayt) sınırda çalışması | `sudo nginx -t`; ZZ ack kuyruğu (ZZ `CANLI-DOGRULAMA.md` G2) |
 
 ### 18.1 `dogrula.sh` ve Zero Zone canlı doğrulama listesi
 

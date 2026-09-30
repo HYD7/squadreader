@@ -15,7 +15,7 @@
 #    Aktif (yazılmakta olan) ve doğrulanmamış kayıt kopyalanmaz.
 #  * export_state.json (kayıt anahtarı + Zero Zone onayları), export_audit.log
 #    (denetim günlüğü), retention_state.json: VARSA (sqreader/export_state.py;
-#    paralel görevle geliyor, adlar SON SÜRÜMDE doğrulanmalı). Yerleri: config
+#    adlar kesinleşti: STATE_FILE, AUDIT_FILE, RETENTION_STATE_FILE). Yerleri: config
 #    export_state_dir, yoksa kayıt dizininin üst dizini (veri dizini).
 #  * config (/etc/sqreader/<port>.config.json ve .env). TOKEN yedeğe ALINMAZ;
 #    yalnız --token-yedekle ile, ayrı SIR/ dizinine ve açık uyarıyla.
@@ -238,8 +238,8 @@ PYEOF
     bilgi "kopyalanan finalize kayıt: $kopya; atlanan (aktif/doğrulanmamış/sidecar yok): $atlanan"
 
     # 3. export_state.json / export_audit.log / retention_state.json (VARSA).
-    # DOĞRULANMADI: bu adlar sqreader/export_state.py'den alındı (çalışma ağacında,
-    # paralel görev); son sürümde doğrulanmalı.
+    # Adlar sqreader/export_state.py'deki STATE_FILE, AUDIT_FILE ve
+    # RETENTION_STATE_FILE sabitleriyle aynıdır (kesinleşti; testle sabitlenir).
     echo "-- export durumu / denetim günlüğü (varsa): $DURUM_DIZINI"
     local bulundu=0 aday
     mkdir -p "$GECICI/export_state"

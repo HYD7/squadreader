@@ -485,6 +485,49 @@ def _make_criteria(exe_names: Sequence[str], game_port: Any, query_port: Any,
                                if log_path_in_container else None))
 
 
+def require_target_criteria(*, game_port: Any = None, query_port: Any = None,
+                            expected_container_id: Any = None) -> None:
+    """Refuse a configuration that names NO target (no game port, query port or
+    container id): discovery would then take "the only SquadGameServer there is",
+    which is exactly how a reader ends up on the wrong server of a shared host.
+    Raises ``DiscoveryConfigError``; unusable values raise it too."""
+    crit = _make_criteria(DEFAULT_EXE_NAMES, game_port, query_port,
+                          expected_container_id, None, None)
+    if (crit.game_port is None and crit.query_port is None
+            and not crit.expected_container_id):
+        raise DiscoveryConfigError(
+            "hedef ölçütü yok: squad_port, squad_query_port ya da "
+            "expected_container_id ayarlanmadan reader BAŞLAMAZ (belirsiz "
+            "hedefe bağlanmamak için). Config dosyasına oyun portunu yazın. / "
+            "no target criterion configured (squad_port, squad_query_port or "
+            "expected_container_id): refusing to start.")
+
+
+def check_instance_port(instance: str, squad_port: Any) -> None:
+    """The systemd instance name (`sqreader@<port>`) must be the game port the
+    config names. Raises ``DiscoveryConfigError`` on a missing / different
+    port, so a unit cannot run with another server's config."""
+    inst = str(instance)
+    if not (inst.isascii() and inst.isdigit() and 1 <= len(inst) <= 5):
+        raise DiscoveryConfigError(
+            f"örnek adı oyun portu (rakam) olmalı: {inst!r}. / instance name "
+            f"must be the game port (digits).")
+    if squad_port in (None, ""):
+        raise DiscoveryConfigError(
+            f"config'te squad_port yok; örnek adı {inst} ile eşitliği "
+            f"doğrulanamaz. / squad_port is not set in the config.")
+    try:
+        cfg_port = int(squad_port)
+    except (TypeError, ValueError) as e:
+        raise DiscoveryConfigError(
+            f"config'teki squad_port bir tam sayı değil: {squad_port!r}") from e
+    if int(inst) != cfg_port:
+        raise DiscoveryConfigError(
+            f"örnek adı ({int(inst)}) ile config'teki squad_port ({cfg_port}) "
+            f"UYUŞMUYOR; servis başlatılmadı (yanlış sunucunun config'i). / "
+            f"instance name and configured squad_port differ.")
+
+
 def _inspect(fs: ProcFS, pid: int, crit: _Criteria, report: ScanReport,
              matches: list[GameProcess]) -> None:
     report.scanned += 1
