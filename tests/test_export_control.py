@@ -666,6 +666,73 @@ def test_ack_body_size_boundary_and_control_keeps_the_small_limit(fx):
         stop(srv)
 
 
+def _raw_headers_only(port, path, declared, *, token=TOKEN, extra=b"", method=b"POST"):
+    """Send ONLY the headers of a request that declares `declared` body bytes and
+    return (status, seconds until the answer). A server that tried to read the
+    body would block until its read timeout instead of answering at once."""
+    import time
+    auth = b"Authorization: Bearer " + token.encode() + b"\r\n" if token else b""
+    t0 = time.monotonic()
+    with socket.create_connection(("127.0.0.1", port), timeout=8) as s:
+        s.sendall(method + b" " + path.encode() + b" HTTP/1.1\r\nHost: x\r\n" + auth
+                  + b"Content-Type: application/json\r\n"
+                  + b"Content-Length: " + str(declared).encode() + b"\r\n"
+                  + extra + b"Connection: close\r\n\r\n")
+        data = s.recv(65536)
+    return int(data.split(b" ", 2)[1]), time.monotonic() - t0
+
+
+def test_transport_body_limit_is_per_path_and_nothing_over_it_is_read(fx):
+    srv, port, _ = start(fx)
+    try:
+        # control: 5000 declared bytes > 4096 -> 413 at once, body never read
+        status, took = _raw_headers_only(port, CONTROL, 5000)
+        assert status == 413 and took < 3.0
+        # ... also without auth: 401 (auth still decides), still nothing read
+        status, took = _raw_headers_only(port, CONTROL, 5000, token=None)
+        assert status == 401 and took < 3.0
+        # ack: the same 5000 (and up to 24576) is within ITS limit -> the
+        # transport waits for the body, so it is NOT answered before it arrives
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+            body = _ack_body([REAL_ID], pad_to=5000)
+            s.sendall(b"POST " + ACK.encode() + b" HTTP/1.1\r\nHost: x\r\n"
+                      b"Authorization: Bearer " + TOKEN.encode() + b"\r\n"
+                      b"Content-Type: application/json\r\nContent-Length: 5000\r\n"
+                      b"Connection: close\r\n\r\n")
+            s.settimeout(0.5)
+            with pytest.raises(socket.timeout):
+                s.recv(1)                          # no answer before the body
+            s.settimeout(10)
+            s.sendall(body)
+            data = b""
+            while chunk := s.recv(65536):
+                data += chunk
+            assert int(data.split(b" ", 2)[1]) == 200
+        assert http(port, ACK, body=_ack_body([REAL_ID], pad_to=ACK_MAX_BODY_BYTES)
+                    )[0] == 200                      # 24576 accepted
+        status, took = _raw_headers_only(port, ACK, ACK_MAX_BODY_BYTES + 1)
+        assert status == 413 and took < 3.0
+        # a path that takes no POST reads no body: 405 at once, even for 1 KiB
+        for path in ("/export/v1/info", "/export/v1/matches", "/export/v1/ack/"):
+            status, took = _raw_headers_only(port, path, 1024)
+            assert status == 405 and took < 3.0, path
+        status, took = _raw_headers_only(port, "/export/v1/info", 1024, method=b"PUT")
+        assert status == 405 and took < 3.0
+    finally:
+        stop(srv)
+
+
+def test_oversized_control_body_is_answered_not_reset(fx):
+    """The refused body is drained AFTER the 413, so a real client (which sends
+    headers and body together) reads the answer instead of a reset."""
+    srv, port, _ = start(fx)
+    try:
+        for size in (MAX_BODY_BYTES + 1, 5000, 60_000):
+            assert http(port, CONTROL, body=b" " * size)[0] == 413, size
+    finally:
+        stop(srv)
+
+
 # ---------------------------------------------------------------------------
 # 5. health
 # ---------------------------------------------------------------------------

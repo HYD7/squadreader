@@ -26,6 +26,8 @@
     "  * 7787 Port= degeriyse:      squad_port = 7787, squad_query_port = null   (asagidaki hali)",
     "  * 7787 QueryPort= degeriyse: squad_port = null, squad_query_port = 7787",
     "Ikisini birden dolu birakmak yalniz her ikisi de dogruysa: ikisi de eslesmelidir.",
+    "sqreader@7787 unit'i (ExecStartPre=sqreader check-instance) ornek adinin squad_port YA DA",
+    "squad_query_port'tan birine ESIT olmasini ister; ikisi de bossa ya da hicbiri 7787 degilse baslamaz.",
     "Ikisi de bos birakilirsa ve makinede birden fazla oyun sureci varsa reader",
     "BASLAMAZ (ilk eslesme secilmez, sqreader/discovery.py)."
   ],

@@ -54,10 +54,11 @@ Environment=PYTHONUNBUFFERED=1
 # %i yalnız rakam olmalı (yanlış örnek adıyla başlatmayı reddet). "$$" = systemd'de
 # değişmez "$".
 ExecStartPre=/bin/sh -c 'case "$$1" in ""|*[!0-9]*) echo "ornek adi oyun portu (rakam) olmali: $$1" >&2; exit 1;; esac' sh %i
-# Örnek adı (%i) ile config'teki oyun portu (squad_port) EŞİT olmalı; değilse servis
-# başlamaz (7788 config'i ile 7787 örneği ya da tersi). `%i` kabuğa gitmez: tek argüman
-# olarak `sqreader check-instance` komutuna geçer (sqreader/cli.py cmd_check_instance;
-# çıkış kodu 0 = eşit, 2 = uyuşmuyor / config'te squad_port yok / config bozuk).
+# Örnek adı (%i) config'teki squad_port YA DA squad_query_port'tan birine EŞİT olmalı;
+# değilse servis başlamaz (7788 config'i ile 7787 örneği ya da tersi). `%i` kabuğa
+# gitmez: tek argüman olarak `sqreader check-instance` komutuna geçer (sqreader/cli.py
+# cmd_check_instance; çıkış kodu 0 = eşit, 2 = hiçbiri eşleşmiyor / ikisi de yok /
+# config bozuk).
 ExecStartPre=/opt/sqreader/venv/bin/sqreader check-instance %i
 # HTTP yalnız 127.0.0.1'e bağlanır. WireGuard/özel arayüz IP'si gerekiyorsa
 # KURULUM-TR.md bölüm 10'daki nginx yolunu ya da drop-in'i kullanın; şablonu

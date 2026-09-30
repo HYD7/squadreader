@@ -356,15 +356,21 @@ class ExportApi:
         self._degraded_reasons = degraded_reasons
         self._clock = clock if clock is not None else time.time
 
-    #: The largest body ANY POST endpoint accepts. The transport (httpsrv) reads
-    #: up to this many bytes; the per-endpoint limit (`body_limit`) is enforced
-    #: here, so the control endpoint stays at MAX_BODY_BYTES.
+    #: The largest body ANY POST endpoint accepts (informational). The
+    #: transport (httpsrv) reads `body_limit(path)` bytes at most, per endpoint,
+    #: and nothing at all for a path that takes no POST (`accepts_post`).
     max_body_bytes = ACK_MAX_BODY_BYTES
 
     @staticmethod
     def body_limit(path: str) -> int:
         """Largest request body the POST endpoint at `path` accepts."""
         return ACK_MAX_BODY_BYTES if path == _ACK_PATH else MAX_BODY_BYTES
+
+    @staticmethod
+    def accepts_post(path: str) -> bool:
+        """Whether `path` (no query string) is an endpoint that takes a POST
+        body at all; the transport reads no body for any other path (405)."""
+        return path in _POST_PATHS
 
     def __repr__(self) -> str:  # the token must not leak through a stray repr
         return f"ExportApi(server_id={self.server_id!r})"

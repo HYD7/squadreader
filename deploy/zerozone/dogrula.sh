@@ -293,7 +293,8 @@ else
     hata "$PORT için $ESLESEN_SAYISI süreç eşleşti: belirsiz, reader BAŞLAMAZ (ilk eşleşme seçilmez). expected_container_id ile daraltın."
 fi
 
-# config ile port ölçütü tutarlı mı
+# config ile port ölçütü tutarlı mı (sqreader check-instance ile AYNI kural: örnek adı =
+# squad_port YA DA squad_query_port; ikisi de yoksa ya da hiçbiri eşleşmiyorsa hata)
 if [ -r "$CONFIG" ]; then
     SP="$(json_alan "$CONFIG" squad_port)"
     SQP="$(json_alan "$CONFIG" squad_query_port)"

@@ -8,7 +8,7 @@
 * A config file that EXISTS but cannot be parsed is an error (exit code 2), not
   "all defaults". A file that does not exist keeps the zero-config behaviour.
 * `sqreader check-instance <port>` (the unit's ExecStartPre) accepts only an
-  instance name equal to the game port in the config.
+  instance name equal to the config's `squad_port` OR `squad_query_port`.
 """
 from __future__ import annotations
 
@@ -223,14 +223,52 @@ def test_check_instance_refuses_another_servers_config(monkeypatch, tmp_path,
     assert "UYUŞMUYOR" in err and "7787" in err and "7788" in err
 
 
-def test_check_instance_refuses_a_config_without_a_port(monkeypatch, tmp_path,
-                                                         capsys):
-    _config(monkeypatch, tmp_path, squad_query_port=27165)
+def test_check_instance_refuses_a_config_without_any_port(monkeypatch, tmp_path,
+                                                           capsys):
+    _config(monkeypatch, tmp_path, squad_port=None, squad_query_port=None)
     assert cli.main(["check-instance", "7787"]) == 2
-    assert "squad_port" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "squad_port" in err and "squad_query_port" in err
+    _config(monkeypatch, tmp_path, squad_port="", squad_query_port="")
+    assert cli.main(["check-instance", "7787"]) == 2
     monkeypatch.setenv("SQREADER_CONFIG", str(tmp_path / "absent.json"))
     monkeypatch.setattr(config, "_cache", None)
     assert cli.main(["check-instance", "7787"]) == 2
+
+
+def test_check_instance_accepts_the_query_port_branch(monkeypatch, tmp_path,
+                                                       capsys):
+    """Documented Zero Zone branch: squad_port null, squad_query_port 7787 ->
+    `sqreader@7787` must start (the unit's ExecStartPre exits 0)."""
+    _config(monkeypatch, tmp_path, squad_port=None, squad_query_port=7787)
+    assert cli.main(["check-instance", "7787"]) == 0
+    _config(monkeypatch, tmp_path, squad_query_port="7787")     # key absent / str
+    assert cli.main(["check-instance", "7787"]) == 0
+    # the other instance name is still refused, and the message names both fields
+    _config(monkeypatch, tmp_path, squad_port=None, squad_query_port=7787)
+    assert cli.main(["check-instance", "7788"]) == 2
+    err = capsys.readouterr().err
+    assert "squad_port" in err and "squad_query_port" in err and "UYUŞMUYOR" in err
+
+
+def test_check_instance_accepts_either_field_when_both_are_set(monkeypatch,
+                                                                tmp_path, capsys):
+    _config(monkeypatch, tmp_path, squad_port=7787, squad_query_port=27165)
+    assert cli.main(["check-instance", "7787"]) == 0        # game port
+    assert cli.main(["check-instance", "27165"]) == 0       # query port
+    assert cli.main(["check-instance", "7788"]) == 2        # neither
+    err = capsys.readouterr().err
+    assert "7787" in err and "27165" in err and "7788" in err
+
+
+def test_check_instance_refuses_a_non_integer_field_even_if_the_other_matches(
+        monkeypatch, tmp_path, capsys):
+    _config(monkeypatch, tmp_path, squad_port="seven", squad_query_port=7787)
+    assert cli.main(["check-instance", "7787"]) == 2
+    assert "squad_port" in capsys.readouterr().err
+    _config(monkeypatch, tmp_path, squad_port=7787, squad_query_port="x")
+    assert cli.main(["check-instance", "7787"]) == 2
+    assert "squad_query_port" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("bad", ["", "abc", "7787;id", "$(id)", "7787 ", "-1",

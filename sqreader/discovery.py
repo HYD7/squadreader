@@ -503,29 +503,46 @@ def require_target_criteria(*, game_port: Any = None, query_port: Any = None,
             "expected_container_id): refusing to start.")
 
 
-def check_instance_port(instance: str, squad_port: Any) -> None:
-    """The systemd instance name (`sqreader@<port>`) must be the game port the
-    config names. Raises ``DiscoveryConfigError`` on a missing / different
-    port, so a unit cannot run with another server's config."""
+def check_instance_port(instance: str, squad_port: Any,
+                        squad_query_port: Any = None) -> None:
+    """The systemd instance name (`sqreader@<port>`) must be a port the config
+    names: `squad_port` (game port) OR `squad_query_port` (QueryPort).
+
+    Rule: at least one of the two must be set; a set value must be an integer;
+    the instance name must equal one of the set values. Raises
+    ``DiscoveryConfigError`` when neither is set, when a set one is not an
+    integer, or when both/either set value differs from the instance -- so a
+    unit cannot run with another server's config. The message names both
+    fields."""
     inst = str(instance)
     if not (inst.isascii() and inst.isdigit() and 1 <= len(inst) <= 5):
         raise DiscoveryConfigError(
             f"örnek adı oyun portu (rakam) olmalı: {inst!r}. / instance name "
             f"must be the game port (digits).")
-    if squad_port in (None, ""):
+    configured: dict[str, int] = {}
+    for name, value in (("squad_port", squad_port),
+                        ("squad_query_port", squad_query_port)):
+        if value in (None, ""):
+            continue
+        try:
+            configured[name] = int(value)
+        except (TypeError, ValueError) as e:
+            raise DiscoveryConfigError(
+                f"config'teki {name} bir tam sayı değil: {value!r}") from e
+    if not configured:
         raise DiscoveryConfigError(
-            f"config'te squad_port yok; örnek adı {inst} ile eşitliği "
-            f"doğrulanamaz. / squad_port is not set in the config.")
-    try:
-        cfg_port = int(squad_port)
-    except (TypeError, ValueError) as e:
+            f"config'te ne squad_port ne squad_query_port var; örnek adı "
+            f"{inst} ile eşitliği doğrulanamaz. / neither squad_port nor "
+            f"squad_query_port is set in the config.")
+    if int(inst) not in configured.values():
+        shown = ", ".join(f"{k}={configured[k]}" if k in configured
+                          else f"{k}=yok"
+                          for k in ("squad_port", "squad_query_port"))
         raise DiscoveryConfigError(
-            f"config'teki squad_port bir tam sayı değil: {squad_port!r}") from e
-    if int(inst) != cfg_port:
-        raise DiscoveryConfigError(
-            f"örnek adı ({int(inst)}) ile config'teki squad_port ({cfg_port}) "
-            f"UYUŞMUYOR; servis başlatılmadı (yanlış sunucunun config'i). / "
-            f"instance name and configured squad_port differ.")
+            f"örnek adı ({int(inst)}) config'teki squad_port / squad_query_port "
+            f"değerlerinin hiçbiriyle eşleşmiyor ({shown}) UYUŞMUYOR; servis "
+            f"başlatılmadı (yanlış sunucunun config'i). / instance name matches "
+            f"neither squad_port nor squad_query_port.")
 
 
 def _inspect(fs: ProcFS, pid: int, crit: _Criteria, report: ScanReport,

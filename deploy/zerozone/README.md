@@ -9,7 +9,7 @@ dış ağa çıkmadan çalıştırmak için dosyalar. Adım adım rehber: **[KUR
 
 | Dosya | Ne işe yarar |
 |---|---|
-| `sqreader@.service` | Örnek başına okuyucu unit'i (örnek adı = oyun portu). Yalnız `sqreader@7787` etkinleştirilir. `ExecStartPre=sqreader check-instance %i` örnek adının config'teki `squad_port` ile eşitliğini denetler (uyuşmazsa servis başlamaz). Export API açıkken `squad_port`/`squad_query_port`/`expected_container_id`'den biri zorunludur (`require_target`); bozuk config varsayılana dönmez (çıkış 2). |
+| `sqreader@.service` | Örnek başına okuyucu unit'i (örnek adı = oyun portu). Yalnız `sqreader@7787` etkinleştirilir. `ExecStartPre=sqreader check-instance %i` örnek adının config'teki `squad_port` YA DA `squad_query_port` ile eşitliğini denetler (ikisi de yoksa ya da hiçbiri eşleşmiyorsa servis başlamaz). Export API açıkken `squad_port`/`squad_query_port`/`expected_container_id`'den biri zorunludur (`require_target`); bozuk config varsayılana dönmez (çıkış 2). |
 | `sqreader-retention@.service`, `sqreader-retention@.timer` | Günlük kayıt saklama. **Kayıtları SİLER**: Export API açıkken yalnız Zero Zone'un onayladığı (ack) bitmiş kayıtları yaş/boyut kuralıyla siler; parametresiz `sqreader retention` artık `retention_*` config varsayılanlarıyla siler (KURULUM-TR.md bölüm 13). Önce `--dry-run`. |
 | `sqreader.7787.config.json.example` | 7787 için config (`server_id: zz-7787`, `net_policy: local-only`, push/güncelleme kapalı, `export_token_file`, `export_state_dir`, `retention_*`). |
 | `sqreader.7788.config.json.example` | 7788 için config. 7788 **varsayılan olarak açılmaz**. |
@@ -23,6 +23,10 @@ Bu okuyucu Zero Zone'un **tek istatistik ve EXP kaynağıdır** (kullanıcı kar
 Değişmeyen kurallar: `--pid` kullanılmaz; HTTP yalnız `127.0.0.1`; token dosyada
 (`/etc/sqreader/<port>.export-token`, 0600), config'te değil; oyun sunucusu/konteyneri
 yeniden başlatılmaz; Docker soketi verilmez; hiçbir konteyner ayrıcalıklı yapılmaz.
+
+## Upstream'den sapmalar (fork değişiklik notu)
+
+- Upstream'den davranış sapması: config dosyası VAR ama bozuksa ya da boşsa (geçersiz JSON, boş dosya, JSON nesnesi olmayan içerik, okunamayan dosya) `sqreader/config.py` sessizce varsayılana dönmez; `ConfigError` fırlatır ve her komut çıkış kodu 2 ile durur (upstream varsayılanlarla devam ederdi ve oyun portu ölçütünü kaybedip bulduğu ilk sunucuya bağlanabilirdi). Config dosyası hiç yoksa upstream'in sıfır-config davranışı aynen sürer.
 
 Lisans: AGPL-3.0-or-later + Commons Clause. `LICENSE` ve `NOTICE` korunur (bkz.
 KURULUM-TR.md, son bölüm).

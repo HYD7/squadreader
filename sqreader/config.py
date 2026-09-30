@@ -241,8 +241,11 @@ def require_target_criteria() -> None:
 
 def check_instance(instance: str) -> None:
     """Raise ``discovery.DiscoveryConfigError`` unless the systemd instance name
-    is the game port the config names (`sqreader@7787` <-> squad_port 7787)."""
-    discovery.check_instance_port(instance, get("squad_port"))
+    is a port the config names: `squad_port` OR `squad_query_port`
+    (`sqreader@7787` <-> squad_port 7787, or squad_port null + squad_query_port
+    7787)."""
+    discovery.check_instance_port(instance, get("squad_port"),
+                                  get("squad_query_port"))
 
 
 def _has_game_port(args: list[str], port: int) -> bool:

@@ -479,6 +479,12 @@ def _make_handler(
             extra: dict[str, Any] = {}
             if method == "POST":
                 extra = self._export_post_input()
+            elif method not in ("GET", "HEAD") and (
+                    self.headers.get("Content-Length", "0").strip() not in ("", "0")
+                    or self.headers.get("Transfer-Encoding") is not None):
+                # PUT/DELETE/... with a body: 405, body never read -> do not
+                # keep the connection alive over it.
+                self.close_connection = True
             res = export_api.handle(method, self.path,
                                     self.headers.get("Authorization"), **extra)
             head = method == "HEAD"
@@ -495,39 +501,62 @@ def _make_handler(
             self.end_headers()
             if not head:
                 self.wfile.write(res.body)
+            self._drain_unread()
 
         def _export_post_input(self) -> dict[str, Any]:
             """What a POST to the Export API needs from the transport: the
             content type, the declared length, the peer address and -- only when
-            the declared length is sane -- the body itself. The Export API
-            decides what to answer; a body it would refuse for its size is never
-            read, and the connection is closed instead of being kept alive over
-            unread bytes."""
-            limit = int(getattr(export_api, "max_body_bytes", 4096))
+            the declared length fits the limit of THIS endpoint -- the body
+            itself. The limit is `ExportApi.body_limit(path)` (control 4096, ack
+            24576); a path that takes no POST at all reads nothing (405). A body
+            over the limit is never read before the answer, and that happens
+            before authentication too: the Export API answers 401/413 from the
+            declared length alone and the connection is closed instead of being
+            kept alive over unread bytes."""
+            path = self.path.split("?", 1)[0]
+            accepts = getattr(export_api, "accepts_post", None)
+            if callable(accepts) and not accepts(path):
+                limit = 0                       # 405 comes first: read nothing
+            else:
+                limit = int(export_api.body_limit(path)) if export_api else 0
             raw = self.headers.get("Content-Length")
             length: Optional[int] = None
             if (self.headers.get("Transfer-Encoding") is None and raw is not None
                     and raw.isascii() and raw.isdigit() and len(raw) <= 9):
                 length = int(raw)
             body: Optional[bytes] = None
-            if length is not None and length <= limit:
+            if length == 0:
+                body = b""
+            elif length is not None and length <= limit:
                 try:
                     self.connection.settimeout(10.0)
                     body = self.rfile.read(length)
                 except OSError:                 # includes a read timeout
                     body = None
-            elif length is not None and length <= 16 * limit:
-                # Too big to use, small enough to swallow: the client then
-                # reads the 413 instead of a connection reset.
-                try:
-                    self.connection.settimeout(10.0)
-                    self.rfile.read(length)
-                except OSError:
-                    pass
             if body is None:
                 self.close_connection = True
+                self._unread_body = length or 0
             return {"body": body, "content_type": self.headers.get("Content-Type"),
                     "content_length": length, "client_ip": self.client_address[0]}
+
+        def _drain_unread(self) -> None:
+            """After the answer is out: swallow a bounded part of a body that
+            was refused unread, so the client reads the 413/401 instead of a
+            connection reset. Never runs before the response is written."""
+            n = min(getattr(self, "_unread_body", 0), 64 * 1024)
+            self._unread_body = 0
+            if n <= 0:
+                return
+            try:
+                self.wfile.flush()
+                self.connection.settimeout(2.0)
+                while n > 0:
+                    chunk = self.rfile.read1(min(n, 8192))  # type: ignore[attr-defined]
+                    if not chunk:
+                        break
+                    n -= len(chunk)
+            except (OSError, ValueError):
+                pass
 
         def _other_method(self) -> None:
             path = self.path.split("?", 1)[0]
