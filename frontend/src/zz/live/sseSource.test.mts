@@ -189,5 +189,65 @@ const conns = (evs: SourceEvent[]) =>
   src.stop();
 }
 
+// --- expired admin ticket: 3 quick failures + past `e` -> ticket_expired
+const NOW_MS = 1_800_000_000_000;
+const mkTicket = (payload: unknown) =>
+  `v1.${Buffer.from(typeof payload === "string" ? payload : JSON.stringify(payload))
+    .toString("base64url")}.sig`;
+function setupTicket(ticket: string) {
+  const timers = fakeTimers();
+  const events: SourceEvent[] = [];
+  const streams: FakeES[] = [];
+  const src = createSseSource({
+    server: "zz-7787", ticket, now: () => NOW_MS,
+    onEvent: (e) => events.push(e), timers, random: () => 0.5,
+    factory: (url) => { const s = new FakeES(url); streams.push(s); return s; },
+  });
+  return { timers, events, streams, src };
+}
+async function failN(h: ReturnType<typeof setupTicket>, n: number) {
+  for (let i = 0; i < n; i++) {
+    h.streams[h.streams.length - 1]!.fail(true);
+    await h.timers.advance(5_000);
+  }
+}
+{
+  const h = setupTicket(mkTicket({ u: "a", s: "zz-7787", e: NOW_MS / 1000 - 60 }));
+  h.src.start();
+  await failN(h, 2);
+  ok(!conns(h.events).includes("ticket_expired"), "2 failures: not yet ticket_expired");
+  await failN(h, 1);
+  eq(conns(h.events).pop(), "ticket_expired", "expired ticket + 3 failures -> ticket_expired");
+  const n = h.streams.length;
+  await h.timers.advance(120_000);
+  eq(h.streams.length, n, "no more reconnects after ticket_expired");
+  ok(!JSON.stringify(h.events).includes("v1."), "ticket not in events");
+  h.src.stop();
+}
+{
+  const h = setupTicket(mkTicket({ u: "a", s: "zz-7787", e: NOW_MS / 1000 + 300 }));
+  h.src.start();
+  await failN(h, 3);
+  ok(!conns(h.events).includes("ticket_expired"), "valid ticket: never ticket_expired");
+  eq(conns(h.events).pop(), "connecting", "valid ticket: normal reconnect state");
+  h.src.stop();
+}
+{
+  const h = setupTicket(mkTicket({ u: "a", s: "zz-7787", e: NOW_MS / 1000 + 300 }));
+  h.src.start();
+  h.streams[0]!.open();
+  await failN(h, 3);
+  eq(conns(h.events).pop(), "reconnecting", "valid ticket after a live period: reconnecting");
+  h.src.stop();
+}
+for (const bad of ["secret-ticket-123", "v1.!!!.sig", mkTicket("not json"), mkTicket({ u: "a" }),
+                   mkTicket({ e: "soon" }), "v1..sig"]) {
+  const h = setupTicket(bad);
+  h.src.start();
+  await failN(h, 4);
+  ok(!conns(h.events).includes("ticket_expired"), `undecodable ticket keeps reconnecting: ${bad.slice(0, 12)}`);
+  h.src.stop();
+}
+
 console.log(`zz live sseSource: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

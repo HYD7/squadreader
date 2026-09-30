@@ -27,6 +27,9 @@ export const SSE_SILENCE_MS = 45_000;
 /** Consecutive failed connections before the state turns from "reconnecting"
  *  to "closed" (it keeps retrying either way). */
 export const SSE_GIVE_UP_AFTER = 6;
+/** Consecutive connections that fail without ever opening before the ticket's
+ *  age is checked (EventSource does not expose the HTTP status of a 403). */
+export const SSE_EXPIRED_CHECK_AFTER = 3;
 /** A single SSE payload larger than this is dropped. */
 export const SSE_MAX_DATA_CHARS = 16 * 1024 * 1024;
 
@@ -43,6 +46,25 @@ export type EventSourceFactory = (url: string) => EventSourceLike;
 
 const ES_CLOSED = 2;
 
+/** True only when the ticket (`v1.<base64url JSON {.., e: epoch seconds}>.<sig>`)
+ *  decodes and its `e` is in the past. Only the expiry is read; nothing else of
+ *  the payload is kept and the ticket is never logged. Any decode problem
+ *  returns false (the normal reconnect loop goes on). */
+export function isTicketExpired(ticket: string, nowMs: number): boolean {
+  try {
+    const parts = ticket.split(".");
+    if (parts.length < 2 || !parts[1]) return false;
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const obj: unknown = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))));
+    const e = obj && typeof obj === "object" ? (obj as { e?: unknown }).e : undefined;
+    return typeof e === "number" && Number.isFinite(e) && e * 1000 <= nowMs;
+  } catch {
+    return false;
+  }
+}
+
 export const browserEventSource: EventSourceFactory = (url) =>
   new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike;
 
@@ -53,12 +75,15 @@ export interface SseSourceOptions {
   factory?: EventSourceFactory;
   timers?: Timers;
   random?: () => number;
+  /** Epoch milliseconds (tests inject a fixed clock). */
+  now?: () => number;
 }
 
 export function createSseSource(opts: SseSourceOptions): LiveSource {
   const factory = opts.factory ?? browserEventSource;
   const timers = opts.timers ?? realTimers;
   const random = opts.random ?? Math.random;
+  const now = opts.now ?? Date.now;
   const emit = opts.onEvent;
 
   let running = false;
@@ -103,6 +128,12 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     closeStream();
     if (watchdog !== null) { timers.clearTimeout(watchdog); watchdog = null; }
     failures++;
+    if (failures >= SSE_EXPIRED_CHECK_AFTER && isTicketExpired(opts.ticket, now())) {
+      // The server answers an expired ticket with 403 and EventSource closes
+      // for good; retrying with the same ticket is pointless.
+      setConn("ticket_expired");
+      return;
+    }
     setConn(failures >= SSE_GIVE_UP_AFTER ? "closed"
             : everOpened ? "reconnecting" : "connecting");
     retryTimer = timers.setTimeout(() => { retryTimer = null; open(); }, backoffMs());

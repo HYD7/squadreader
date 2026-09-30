@@ -7,6 +7,15 @@ import type { ConnState } from "./liveUrls";
 import { LIVE_TR, badgeText } from "./liveText";
 import { createPhaseTracker, type Phase, type PhaseTracker } from "./livePhase";
 
+/** Reload the top window (the viewer runs inside the portal's iframe). */
+export function reloadTop(win: Window = window): void {
+  try {
+    (win.top ?? win).location.reload();
+  } catch {
+    win.location.reload();
+  }
+}
+
 export function LiveBadge(props: {
   conn: ConnState; delaySec: number | null; admin: boolean;
 }) {
@@ -63,6 +72,19 @@ export function LiveStatusOverlay(props: {
           <div className="buf-sub">{LIVE_TR.fullSub}</div>
           <div className="buf-actions">
             <button className="buf-ok" onClick={props.onRetry}>{LIVE_TR.retryNow}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (conn === "ticket_expired") {
+    return (
+      <div className="buf-overlay" role="status">
+        <div className="buf-card">
+          <div className="buf-title">{LIVE_TR.ticketExpiredTitle}</div>
+          <div className="buf-sub">{LIVE_TR.ticketExpiredSub}</div>
+          <div className="buf-actions">
+            <button className="buf-ok" onClick={() => reloadTop()}>{LIVE_TR.reloadPage}</button>
           </div>
         </div>
       </div>

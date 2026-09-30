@@ -7,7 +7,9 @@
 import type { ZzLiveKind } from "../mode";
 
 /** Connection states shown to the viewer. */
-export type ConnState = "connecting" | "live" | "reconnecting" | "full" | "ip_limit" | "closed";
+export type ConnState = "connecting" | "live" | "reconnecting" | "full" | "ip_limit" | "closed"
+  /** Admin SSE: the ticket (10 min) expired; only a page reload gets a new one. */
+  | "ticket_expired";
 
 /** What a live source reports to the feed controller. */
 export type SourceEvent =
