@@ -1,6 +1,7 @@
-// Zero Zone replay viewer root. Replay-only: no live mode, no recording picker,
-// no stats pages, no analytics. Everything it loads is same-origin and relative.
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+// Zero Zone viewer root: replay (`?mode=replay&id=`) and live (`?mode=live&server=`,
+// `?mode=admin-live&server=&bilet=`). No recording picker, no stats pages, no
+// analytics. Everything it loads is same-origin.
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 import { MapCanvas } from "../canvas/MapCanvas";
 import type { Hit } from "../canvas/hitTest";
 import { TopBar } from "../ui/TopBar";
@@ -24,18 +25,25 @@ import { SourceLink } from "./SourceLink";
 import { MapNotice } from "./MapNotice";
 import { ZzMessage } from "./ZzMessage";
 import { useZzGate } from "./useZzGate";
-import { errorText, parseZzLocation, TR } from "./mode";
+import { errorText, parseZzLocation, TR, type ZzLiveLocation } from "./mode";
+import { useLiveFeed } from "./live/useLiveFeed";
+import { LiveBadge, LiveStatusOverlay } from "./live/LiveStatus";
+import { LiveEndOverlay } from "./live/LiveEndOverlay";
 
 // Same lazy split as upstream: the loadout catalog loads on first vehicle click.
 const VehiclePanel = lazy(() =>
   import("../ui/VehiclePanel").then((m) => ({ default: m.VehiclePanel })));
 
-function Viewer() {
-  useReplayLoader();
-  useReplayPlayback();
-  useKillFeed();
-  useReplayKillFeed();
-
+/** Shared viewer layout. `overlays` / `topExtra` / `bottom` differ between the
+ *  replay and the live viewer; the map, panels and hotkeys are the same. */
+function ViewerLayout(props: {
+  live: boolean;
+  topExtra?: ReactNode;
+  overlays: ReactNode;
+  bottom?: ReactNode;
+  /** Live: the "Maç bitti" layer replaces the shared match-phase card. */
+  hideMatchOverlay?: boolean;
+}) {
   const [tooltip, setTooltip] = useState<{ hit: Hit | null; x: number; y: number }>(
     { hit: null, x: 0, y: 0 });
   const selectedVehicleId    = useViewerStore((s) => s.selectedVehicleId);
@@ -108,31 +116,63 @@ function Viewer() {
       setScoreboardVisible, toggleScoreboard, toggleTimeline, setTimelineVisible]);
 
   return (
-    <div id="root-grid">
+    <div id="root-grid" className={props.live ? "zz-live-root" : undefined}>
       <div id="stage">
         <MapCanvas onHover={onHover} onLeave={onLeave} onClick={onClick} />
         {/* Desktop: `display: contents`, so the three keep their own absolute
             positions. Narrow screens: one stacked column (see zz.css). */}
         <div className="zz-topstack">
+          {props.topExtra}
           <TopBar />
           <TeamBar />
           <PlayerSearch />
           <MapNotice />
         </div>
-        <BufferOverlay />
-        <MatchOverlay />
+        {props.overlays}
+        {!props.hideMatchOverlay && <MatchOverlay />}
         <Tooltip {...tooltip} />
         {selectedVehicleId &&
           <Suspense fallback={null}><VehiclePanel /></Suspense>}
         <PlayerPanel />
         <InfoPanel />
         <KillFeed />
-        <TimelineBar />
+        {props.bottom}
       </div>
       <Scoreboard />
       <TicketTimeline />
       <SourceLink />
     </div>
+  );
+}
+
+function Viewer() {
+  useReplayLoader();
+  useReplayPlayback();
+  useKillFeed();
+  useReplayKillFeed();
+  return (
+    <ViewerLayout live={false} overlays={<BufferOverlay />} bottom={<TimelineBar />} />
+  );
+}
+
+/** Live viewer: no timeline / seek / speed controls (they only render in replay
+ *  mode), a "CANLI" badge, Turkish connection layers and the end-of-match layer. */
+function LiveViewer({ loc }: { loc: ZzLiveLocation }) {
+  const feed = useLiveFeed(loc);
+  const ended = feed.end.phase !== "hidden";
+  return (
+    <ViewerLayout
+      live
+      hideMatchOverlay={ended}
+      topExtra={<LiveBadge conn={feed.conn} delaySec={feed.delaySec} admin={feed.admin} />}
+      overlays={
+        <>
+          <LiveStatusOverlay conn={feed.conn} hidden={ended} onRetry={feed.onRetry} />
+          <LiveEndOverlay state={feed.end} admin={feed.admin} onNext={feed.onNext}
+                          onGoto={feed.onGoto} onClose={feed.onClose} />
+        </>
+      }
+    />
   );
 }
 
@@ -163,19 +203,26 @@ export default function ZzApp() {
   const setReplay = useViewerStore((s) => s.setReplay);
   const [seeded, setSeeded] = useState(false);
 
-  // Seed the store with the match id before the viewer mounts, so the first
-  // viewer render already is in replay mode.
+  // Seed the store with the mode (and the match id) before the viewer mounts, so
+  // the first viewer render already is in the right mode.
   useEffect(() => {
     if (!loc.ok) return;
-    setReplay((r) => ({ ...r, id: loc.id, frames: [], currentIdx: 0,
-                        playing: false, speed: 1, baseWallMs: 0, baseSnapMs: 0 }));
-    setMode("replay");
+    if ("kind" in loc) {
+      setMode("live");
+    } else {
+      setReplay((r) => ({ ...r, id: loc.id, frames: [], currentIdx: 0,
+                          playing: false, speed: 1, baseWallMs: 0, baseSnapMs: 0 }));
+      setMode("replay");
+    }
     setSeeded(true);
   }, [loc, setMode, setReplay]);
 
   if (!loc.ok) {
-    return <ZzMessage title={TR.invalidId} sub={TR.invalidIdSub} />;
+    return loc.reason === "bad-mode"
+      ? <ZzMessage title={TR.invalidAddress} sub={TR.invalidAddressSub} />
+      : <ZzMessage title={TR.invalidId} sub={TR.invalidIdSub} />;
   }
   if (!seeded) return <ZzMessage title={TR.loading} spinner />;
+  if ("kind" in loc) return <LiveViewer loc={loc} />;
   return <Gated id={loc.id} />;
 }

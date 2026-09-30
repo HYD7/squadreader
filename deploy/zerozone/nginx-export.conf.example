@@ -24,6 +24,9 @@
 # Ne açılır: YALNIZ /export/v1/ yolu (kaynak: sqreader/export_api.py, bu dosya
 # yazılırken depoda doğrulandı):
 #   GET/HEAD  info, health, matches, matches/<id>, unverified, recordings/<id>
+#   GET       live/stream (SSE) ve live/snapshot: YALNIZ reader config'inde
+#             `export_live_enabled: true` iken; varsayılan KAPALI, kapalıyken 404
+#             (canlı yayın: aşağıdaki "CANLI YAYIN" notu ve KURULUM-TR.md bölüm 10.5)
 #   POST      yalnız /export/v1/ack ve /export/v1/control/recording
 #             (export_api.py _POST_PATHS; gövde en çok 4096 bayt (control,
 #             MAX_BODY_BYTES) ve 24576 bayt (ack, ACK_MAX_BODY_BYTES: 100 kimlik);
@@ -43,6 +46,10 @@ log_format zz_export '$remote_addr [$time_local] "$request_method $uri" '
 
 # İstek hızı: Zero Zone'un çekim döngüsü için makul; ÖLÇÜLMEDİ, canlıda ayarlanır.
 limit_req_zone $binary_remote_addr zone=zz_export:1m rate=5r/s;
+# Eşzamanlı bağlantı: canlı yayın (SSE) uzun ömürlü bir bağlantıdır; hız yerine
+# EŞZAMANLI bağlantı sayısı sınırlanır (bkz. "CANLI YAYIN" notu). Değer, Zero Zone'un
+# aynı anda açacağı akış + kayıt indirmesi sayısının rahat üstünde olmalı.
+limit_conn_zone $binary_remote_addr zone=zz_export_conn:1m;
 
 server {
     listen 443 ssl;
@@ -78,11 +85,31 @@ server {
     }
 
     # --- sunucu 7787 (reader 127.0.0.1:8787) ---
+    #
+    # CANLI YAYIN (SSE) AYNI location'DA: /sr/7787/export/v1/live/stream de bu blokla
+    # eşleşir, AYRI location GEREKMEZ. Canlı yayın için bu blokta şunlar şarttır
+    # (hepsi aşağıda zaten vardır; canlı yayını açmadan önce SİLMEYİN/DEĞİŞTİRMEYİN):
+    #   * proxy_http_version 1.1 + Connection ""  : akış bağlantısı açık kalır
+    #   * proxy_buffering off                     : olaylar tamponlanmadan gider (yoksa
+    #                                               SSE "donar", olaylar toplu gelir)
+    #   * gzip off                                : text/event-stream sıkıştırılmaz
+    #                                               (gzip_types'a EKLEMEYİN)
+    #   * proxy_read_timeout                      : reader boştayken 5 sn'de bir `hb`
+    #                                               olayı yazar; 600 sn bunun çok üstündedir
+    #   * chunked_transfer_encoding'i KAPATMAYIN.
+    # limit_req yerine limit_conn: limit_req sınırı aşılınca 503 döner; tarayıcı
+    # EventSource'u 503'te bağlanmayı BIRAKIR, elle yeniden bağlanan istemci ise
+    # yeniden bağlanma fırtınası üretir. Akış için doğru sınır eşzamanlı bağlantıdır
+    # (limit_conn). Buradaki limit_req yalnız BAĞLANTI AÇMA hızını sınırlar (akışta tek
+    # istektir); burst=20 nodelay, Zero Zone'un yeniden bağlanmasını (1-30 sn geri
+    # çekilme) emer. reader'ın kendi sınırı ayrıca `live_max_clients` (aşılınca 503
+    # `live_busy`, Retry-After: 5). Bu değerler ÖLÇÜLMEDİ: canlıda ayarlanır.
     location ^~ /sr/7787/export/v1/ {
         limit_except GET HEAD POST {
             deny all;
         }
         limit_req zone=zz_export burst=20 nodelay;
+        limit_conn zz_export_conn 20;
 
         # Ön eki at, /export/v1/ ile reader'a ilet. URI kısmı olan proxy_pass:
         # /sr/7787/export/v1/info -> http://127.0.0.1:8787/export/v1/info
@@ -96,14 +123,19 @@ server {
         proxy_set_header Authorization $http_authorization;
         proxy_set_header Host $host;
 
-        # Akış: kayıt indirmeleri büyük. Belleğe/diske tamponlama YOK.
+        # Akış: kayıt indirmeleri büyük ve canlı yayın (SSE) uzun ömürlü. Belleğe/diske
+        # tamponlama YOK. (Reader ayrıca `X-Accel-Buffering: no` dahil kendi başlıklarını
+        # yazar; `proxy_buffering off` yine de şarttır.)
         proxy_buffering off;
+        proxy_cache off;
         # İstek gövdesi (yalnız küçük POST) tamponlanır: reader (stdlib) chunked istek almaz.
         proxy_request_buffering on;
         # Reader zaten gzip/zstd verir (Content-Encoding); nginx yeniden sıkıştırmasın.
         gzip off;
 
-        # Büyük yanıt için zaman aşımı (ÖLÇÜLMEDİ; en büyük kayıt indirmesine göre ayarlayın).
+        # Büyük yanıt / canlı akış için zaman aşımı (ÖLÇÜLMEDİ; en büyük kayıt indirmesine
+        # göre ayarlayın). Canlı akışta reader 5 sn'de bir `hb` yazdığı için read timeout
+        # akışı kesmez; kesilirse Zero Zone geri çekilmeyle yeniden bağlanır.
         proxy_connect_timeout 5s;
         proxy_send_timeout    600s;
         proxy_read_timeout    600s;
@@ -114,15 +146,19 @@ server {
     }
 
     # --- sunucu 7788 (BİLİNÇLİ KARARLA AÇILIR; varsayılan KAPALI) ---
+    # 7788 için canlı yayın da AÇILMAZ (7788 reader config'inde export_live_enabled false
+    # kalır, Zero Zone'da live.servers'a eklenmez); bu blok açılsa bile canlı yol 404 döner.
     # location ^~ /sr/7788/export/v1/ {
     #     limit_except GET HEAD POST { deny all; }
     #     limit_req zone=zz_export burst=20 nodelay;
+    #     limit_conn zz_export_conn 20;
     #     proxy_pass http://127.0.0.1:8788/export/v1/;
     #     proxy_http_version 1.1;
     #     proxy_set_header Connection "";
     #     proxy_set_header Authorization $http_authorization;
     #     proxy_set_header Host $host;
     #     proxy_buffering off;
+    #     proxy_cache off;
     #     proxy_request_buffering on;
     #     gzip off;
     #     proxy_connect_timeout 5s;

@@ -35,6 +35,16 @@ export const RENDER_DELAY_MS = 6_000;
 // (~10 s / 250 ms ≈ 40).
 const SNAP_BUFFER_SPAN_MS = RENDER_DELAY_MS + 4_000;  // 10 s time window
 const SNAP_BUFFER_CAP = 48;  // memory ceiling (~10 s @ 4 Hz = 40 frames, + margin)
+// The render delay is read from the store (`renderDelayMs`) so a live source
+// with a different jitter budget (the Zero Zone admin feed, 2 s) can lower it.
+// It defaults to RENDER_DELAY_MS, so every other build behaves exactly as
+// before. The clamp keeps a bad value from freezing or racing the canvas.
+export const MIN_RENDER_DELAY_MS = 500;
+export const MAX_RENDER_DELAY_MS = 30_000;
+export function clampRenderDelayMs(ms: number): number {
+  if (!Number.isFinite(ms)) return RENDER_DELAY_MS;
+  return Math.max(MIN_RENDER_DELAY_MS, Math.min(MAX_RENDER_DELAY_MS, Math.round(ms)));
+}
 
 // Toggleable map layers (show/hide entity families for decluttering) plus the
 // number-label options. Both are stored in the same `layers` map and driven by
@@ -148,6 +158,8 @@ interface Store {
   // already-arrived snapshots — it can never run past the newest frame and
   // freeze (the periodic ~0.5s map hitch). Latency is a non-issue here.
   snapBuffer: { snap: Snapshot; t: number }[];
+  // How far in the past the live canvas draws (ms). Default RENDER_DELAY_MS.
+  renderDelayMs: number;
 
   view: ViewState;
 
@@ -215,6 +227,8 @@ interface Store {
   setStatus(s: ConnStatus): void;
   setCanLive(v: boolean): void;
   ingestLive(snap: Snapshot): void;
+  setRenderDelayMs(ms: number): void;
+  resetLive(): void;
   setView(updater: (v: ViewState) => ViewState): void;
   setReplay(updater: (r: ReplaySlice) => ReplaySlice): void;
   retryReplayLoad(): void;
@@ -254,6 +268,7 @@ export const useViewerStore = create<Store>((set) => ({
   // time-warp the map. See ingestLive + MapCanvas RENDER_DELAY_MS.
   avgTickMs: NOMINAL_TICK_MS,
   snapBuffer: [],
+  renderDelayMs: RENDER_DELAY_MS,
   view: { ...DEFAULT_VIEW },
   replay: {
     id: null,
@@ -325,8 +340,10 @@ export const useViewerStore = create<Store>((set) => ({
       // arrival `t` (no reclock — the teleport guard already reads the real
       // per-pair span, so in-tolerance motion is correct).
       const snapBuffer = [...s.snapBuffer, { snap: patched, t: now }];
+      // Keep at least render-delay + 4 s of frames (10 s at the default delay).
+      const spanMs = Math.max(SNAP_BUFFER_SPAN_MS, s.renderDelayMs + 4_000);
       while (snapBuffer.length > 2
-             && now - snapBuffer[0]!.t > SNAP_BUFFER_SPAN_MS) snapBuffer.shift();
+             && now - snapBuffer[0]!.t > spanMs) snapBuffer.shift();
       while (snapBuffer.length > SNAP_BUFFER_CAP) snapBuffer.shift();
       // Freeze the win-instant tickets: only advance lastInProgressTeams while
       // the match is actually InProgress (and the read carried teams), so it
@@ -345,6 +362,28 @@ export const useViewerStore = create<Store>((set) => ({
         snapBuffer,
       };
     });
+  },
+  setRenderDelayMs(ms) {
+    set({ renderDelayMs: clampRenderDelayMs(ms) });
+  },
+  resetLive() {
+    // A live feed discontinuity (gap / reset / next match): everything that
+    // remembers the previous stream has to go, or the next frame would be read
+    // against it (ghost players, stale aliases, a kill feed diffed against the
+    // old counters). Two `set` calls on purpose: `useKillFeed` re-seeds its
+    // DiffState whenever `mode` changes, and zustand notifies subscribers once
+    // per `set`, so leaving "live" and coming straight back does that without
+    // touching the hook. No frame is drawn in between (both calls are
+    // synchronous).
+    resetCarryOver();
+    set({
+      mode: "home",
+      prevSnap: null, curSnap: null, lastInProgressTeams: null,
+      curArrivalMs: 0, snapBuffer: [], killFeed: [],
+      selectedVehicleId: null, selectedPlayerKey: null, selectedInfo: null,
+      followKey: null, followVehicleId: null,
+    });
+    set({ mode: "live" });
   },
   setView(updater) {
     set((s) => ({ view: updater(s.view) }));

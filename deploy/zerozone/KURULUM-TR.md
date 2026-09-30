@@ -1,5 +1,7 @@
 # SquadReader - Zero Zone kurulum ve işletme rehberi (Linux host)
 
+> **Ubuntu tek komut kurulumu için bkz. `deploy/ubuntu/sqreader-kur.sh` ve Zero Zone deposundaki `deploy/ubuntu/KURULUM-UBUNTU-TR.md`.** Bu rehber adımları elle anlatır; tek komut betiği aynı unit/config dosyalarını kullanır.
+
 Bu rehber, SquadReader okuyucusunu (Zero Zone çatalı) oyun sunucusuyla aynı Linux
 makinede, ayrı bir sistem kullanıcısıyla ve asgari yetkiyle çalıştırmak içindir.
 Okuyucu yalnız **okur**: oyun sürecinin belleğini ve logunu izler, biten maçları kaydeder,
@@ -223,6 +225,9 @@ sudo -u sqreader python3 -c "import json; json.load(open('/etc/sqreader/7787.con
 | `net_policy` / `net_allow_hosts` | `"local-only"` / `[]` | Dış ağ politikası (`sqreader/netpolicy.py`). `local-only`: yalnız loopback, özel ağ ve `net_allow_hosts`'ta birebir yazılan adresler; `allow-central` upstream davranışını (enroll, push, güncelleme) açar ve açıkça seçilmelidir. Geçersiz değerde okuyucu HATA verip çıkar (çıkış kodu 2). `SQREADER_NET_POLICY` / `SQREADER_NET_ALLOW_HOSTS` ortam değişkenleri config'e üstündür (3.4). |
 | `update_enabled` / `offset_autoheal` | `false` / `false` | Bu çatalda kod varsayılanı da `false` (`sqreader/config.py`); upstream'de `true` idi. Örnek config açıkça `false` verir. |
 | `export_state_dir` | `null` | `export_state.json`, `export_audit.log`, `retention_state.json` yeri (`sqreader/export_state.py`: `STATE_FILE`, `AUDIT_FILE`, `RETENTION_STATE_FILE`); `null` = kayıt dizininin üst dizini (`/var/lib/sqreader/7787`). `retention --state-dir` bunu ezer. |
+| `export_live_enabled` | `false` | **Canlı yayın** (SSE) anahtarı; varsayılan KAPALI. JSON boolean olmalı (`"true"` metni reddedilir, okuyucu çıkış 2 ile durur). Export API açık değilse (kullanılabilir token dosyası yoksa) etkisizdir. Bölüm 10.5. |
+| `live_max_clients` | `2` | Canlı yayında aynı anda en çok abone (1-8); sonraki istek 503 `live_busy`. |
+| `live_ring_seconds` / `live_ring_max_mb` | `30` / `32` | Son karelerin bellek halkası (5-120 sn / 1-256 MB; hangisi önce dolarsa). Diske yazılmaz. |
 | `retention_max_age_days` | `90` | Onaylı (ack) ve bitmiş kayıtlar bu yaştan sonra silinir (0 = kapalı). |
 | `retention_max_total_gb` | `150` | Kayıt dizini bu boyuta sığana dek en eskiler silinir (0 = kapalı). |
 | `retention_min_free_gb` | `5` | Boş alan tabanı: altında DİSK ACİL DURUMU (en eskiler silinir, onaysızlar en sonda); hiçbir şey silinemiyorsa YENİ KAYIT AÇILMAZ (`recordingEnabledReason=disk_low`). |
@@ -559,6 +564,159 @@ curl -s -H @<(printf 'Authorization: Bearer %s' "$(sudo cat /etc/sqreader/7787.e
 - Ayrıntı, kaynak referansları ve bilinen ölçüm sınırları (sayaçlar en büyük değerle tutulur; okunamayan
   sayaç `0` olur): `docs/zerozone-kacan-maclar.md`.
 
+### 10.5 Canlı yayın (opsiyonel; varsayılan KAPALI)
+
+Zero Zone'un sitede "canlı maç izleme" özelliği için okuyucu, oynanmakta olan maçı Export API üzerinden Zero Zone'a
+**akıtabilir**. Bu, upstream'de olmayan bir fork özelliğidir (`sqreader/livehub.py`) ve **varsayılan olarak kapalıdır**.
+Açmadan önce `PRIVACY.md` "Live stream over the Export API" bölümünü okuyun.
+
+#### 10.5.1 Ne olduğu, ne olmadığı
+
+- İki yol: `GET /export/v1/live/stream` (SSE) ve `GET /export/v1/live/snapshot` (son tam kare, JSON). İkisi de Export API'nin
+  AYNI Bearer token'ıyla korunur. `export_live_enabled` `false` iken (varsayılan) ikisi de düz **404** döner.
+  Herkese açık `/stream` ya da `/latest` yoktur ve yapılmaz: canlı veri yalnız token korumalı Export yolundadır.
+- Akış **HAM veridir**: okuyucunun kendi tick satırı, bayt bayt. EOS kimlikleri, oyuncu adları, bellek adresleri
+  (`_addr`, `leaderStateAddr`), `isAdmin` ve her oyuncunun konumu içerir. Okuyucu hiçbirini süzmez. Temizleme (takma ad,
+  adres/`isAdmin` atma, gizli profiller, yayın gecikmesi) **yalnız Zero Zone sunucu tarafında** yapılır; Zero Zone dışında
+  herhangi bir tüketici bağlarsanız o adım sizin sorumluluğunuzdadır. Token sızıntısı bu yüzden ciddidir (bölüm 10.3).
+- Canlı yayın tick döngüsüne yalnız O(1) bir `publish` ekler (hazır satırı halkaya ve abone kuyruklarına koyar);
+  kodlama ve soket yazımı abone iş parçacıklarındadır. Kapalıyken eklenen tek şey bir `None` denetimidir.
+- Diske hiçbir şey yazılmaz; yalnız bellekte kısa bir kare halkası tutulur (yeniden başlatmada gider).
+
+#### 10.5.2 Açma
+
+Ön koşullar (hepsi sağlanmadan açmayın):
+
+1. Export API açık ve token dosyası en az **32 karakter** (bölüm 5.1). Token yoksa ya da kısaysa canlı yayın da kurulmaz
+   (log: "export_live_enabled is set but the Export API is off").
+2. Zero Zone tarafı hazır: `SquadReaderSync` `live` seçenekleri ve **herkese açık yayın için** Zero Zone'da replay anahtarı
+   (`replaySecretFile`; yoksa herkese açık canlı kapalı kalır) ve yayınlanmış çatal adresi (`<FORK_URL>`; AGPL, bölüm 19).
+   Zero Zone'da yayın gecikmesi varsayılan 600 sn, en az 180 sn'dir (`live.delaySec`).
+3. **Yalnız 7787.** 7788 için açılmaz (bölüm 12).
+4. Ölçüm planı (bölüm 10.5.6): önce yayın kapalıyken taban değeri kaydedin.
+
+Config (`/etc/sqreader/7787.config.json`; anahtarlar örnek dosyada `false`/varsayılanlarla zaten vardır):
+
+```json
+"export_live_enabled": true,
+"live_max_clients": 2,
+"live_ring_seconds": 30,
+"live_ring_max_mb": 32
+```
+
+- `live_max_clients` 1-8 (varsayılan 2): Zero Zone tek bağlantı kullanır; ikinci abone bir yönetici/teşhis içindir. Sınırın
+  ötesi 503 `live_busy` (`Retry-After: 5`).
+- `live_ring_seconds` 5-120, `live_ring_max_mb` 1-256: hangisi önce dolarsa en eski kare atılır. Aralık dışı değer ya da
+  boolean olmayan `export_live_enabled` okuyucuyu HATA (çıkış 2) ile durdurur; sessizce varsayılana dönmez.
+- Değişiklik için okuyucu yeniden başlatılır. **İki maç arasında yeniden başlatın:** maç ortasında yeniden başlama maçı iki
+  kayda bölebilir ve kapanmamış parça `unverified` kalır (bölüm 10.4).
+
+Açtıktan sonra doğrulama (ÇALIŞTIRILMADI: Linux host gerekli):
+
+```bash
+# `info` yanıtında `live` alanı yalnız canlı yayın etkinken bulunur:
+curl -s -H @<(printf 'Authorization: Bearer %s' "$(sudo cat /etc/sqreader/7787.export-token)")   http://127.0.0.1:8787/export/v1/info | python3 -m json.tool
+# akış: ilk olay `hello`, sonra `full`/`pos`/`match`; boştayken 5 sn'de bir `hb`. -N tamponlamayı kapatır.
+curl -sN --max-time 15 -H @<(printf 'Authorization: Bearer %s' "$(sudo cat /etc/sqreader/7787.export-token)")   http://127.0.0.1:8787/export/v1/live/stream | cut -c1-160
+# token olmadan 401 beklenir (Export API açıkken); doğru token ile ama canlı yayın KAPALIyken 404:
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/export/v1/live/stream
+```
+
+Bu çıktı ham veri içerir (ad, EOS): ekran görüntüsü/log olarak paylaşmayın.
+
+#### 10.5.3 Zero Zone tarafı (özet)
+
+Ayrıntı Zero Zone deposunda `docs/squadreader/CANLI.md` ve `KARARLAR.md`'dedir. Özet: `SquadReaderSync` `live` seçeneği
+`{ delaySec, maxViewers, maxViewersPerIp, bufferMaxMb, adminIdleCloseSec, servers: { "<ZZ_SUNUCU_KIMLIGI>": { enabled, publicEnabled } } }`;
+yalnız `sources[].enabled` VE `live.servers` içinde olan kaynak bağlanır (7788 eklenmedikçe sıfır bağlantı). Herkese açık
+yayın (`publicEnabled`) varsayılan KAPALIdır; yönetici görünümü ayrı izinle (`squadreader.live`) açılır. Zero Zone yayın
+gecikmesini kendi saatiyle uygular ve kareleri yayın anında temizler; okuyucu tarafında gecikme yoktur.
+
+#### 10.5.4 nginx ve ters proxy
+
+Canlı yol `nginx-export.conf.example` içinde AYNI `location ^~ /sr/7787/export/v1/` bloğundadır; ayrı blok gerekmez.
+Şart olanlar (örnekte hazırdır, silmeyin): `proxy_http_version 1.1` + `Connection ""`, `proxy_buffering off` (yoksa SSE
+donar), `gzip off` (`text/event-stream` `gzip_types`'a eklenmez), yeterli `proxy_read_timeout` (okuyucu 5 sn'de bir `hb`
+yazar; 600 sn yeter), `chunked_transfer_encoding`'i kapatmayın. `limit_req` sınırı aşılınca 503 döner ve yeniden bağlanma
+fırtınası yaratır; akış için **`limit_conn`** (eşzamanlı bağlantı) kullanılır. Caddy kullanılıyorsa `reverse_proxy` altında
+`flush_interval -1`. Bu ayarlar `nginx -t` ve gerçek akışla SINANMADI.
+
+#### 10.5.5 Hata kodları ve sınırlar
+
+| Durum | Anlamı |
+|---|---|
+| 404 | `export_live_enabled` kapalı, Export API kapalı ya da yanlış yol (hepsi aynı 404) |
+| 401 `unauthorized` | token yok/yanlış |
+| 400 `bad_query` | `live/stream` sorgu dizesi kabul etmez (`Last-Event-ID` başlığı kullanılır) |
+| 503 `live_busy` | `live_max_clients` dolu; `Retry-After: 5` |
+| 503 `live_no_frame` | `live/snapshot`: henüz hiç tam kare yok; `Retry-After: 1` |
+
+Olaylar: `hello` (ilk), `full`, `pos` (iki katmanlı kipte 4 Hz konum), `match` (`started`/`ended`, 3 tick onaylı), `hb` (5 sn),
+`gap` (kayıp; sonraki `full` yeni baz). Yazma zaman aşımı 10 sn: tıkanan abone bırakılır, tick döngüsü etkilenmez.
+Canlı istatistikler (`subscribers`, `publishAvgNs`, `publishMaxNs`, `gaps`, `rejected`, `bytesSent`, `ringBytes`...)
+`GET http://127.0.0.1:8787/health/deep` yanıtındaki `live` alanındadır (yalnız loopback; nginx bu yolu dışarı açmaz).
+
+#### 10.5.6 CPU / RAM ölçümü
+
+**Gerçek sunucuda ölçülmedi.** Canlıda, oyun yoğunken, üç durumu aynı komutlarla karşılaştırın: (a) canlı yayın kapalı,
+(b) açık ve abonesiz, (c) Zero Zone bağlı. Komutlar bölüm 14'tekiyle aynıdır (`pidstat -u -r -p "$MPID" 5 24`,
+`systemctl show sqreader@7787 -p CPUUsageNSec -p MemoryCurrent`), ek olarak `/health/deep` içindeki `live.publishAvgNs` ve
+`live.ringBytes`. Oyunun tick süresini/CPU'sunu da aynı anda izleyin.
+
+**Yerel ölçüm (Windows, sentetik golden; gerçek sunucuda ÇALIŞTIRILMADI).** `scripts/live_bench.py`, gerçek `LiveHub`'ı gerçek
+`httpsrv` + Export API arkasında, sentetik golden kaydın (`tests/fixtures/zz_golden/zz-7787/recording-*.ndjson.gz`; 8 sahte
+oyunculu küçük kareler) satırlarıyla besler ve 0/1/2 gerçek SSE aboneyle (ayrı süreçler, 127.0.0.1) `publish` süresini
+ölçer. Süreç yalnız hub + sunucu + üreticiyi içerir (bellek okuyucusu YOK): CPU ve RSS bir SquadReader'ın değil, canlı
+yayının **artımlı** maliyetidir.
+
+**A. Canlıya yakın hız** (`5.0` satır/sn, senaryo başına `60.0` sn, `--pad-kb 0`, win32 Python 3.12.10, 16 mantıksal CPU):
+
+| Abone | Yayın sayısı | `publish` p50 (ns) | p99 (ns) | en çok (ns) | CPU % | CPU µs/satır | RSS (MB) | RSS artışı (MB) | gap | gönderilen (MB) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 301 | 19700 | 45900 | 150700 | 0.03 | 51.9 | 32.77 | 1.79 | 0 | 0.00 |
+| 1 | 301 | 25200 | 66100 | 83300 | 0.0 | 0.0 | 33.75 | 2.68 | 0 | 1.32 |
+| 2 | 301 | 23200 | 77600 | 150400 | 0.0 | 0.0 | 33.87 | 2.89 | 0 | 2.64 |
+
+Tam kare boyutu: 12734-14422 bayt (JSON satırı).
+
+**B. 20 kat hızlı (daha çok örnek; p99 daha güvenilir)** (`100.0` satır/sn, senaryo başına `20.0` sn, `--pad-kb 0`, win32 Python 3.12.10, 16 mantıksal CPU):
+
+| Abone | Yayın sayısı | `publish` p50 (ns) | p99 (ns) | en çok (ns) | CPU % | CPU µs/satır | RSS (MB) | RSS artışı (MB) | gap | gönderilen (MB) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 2000 | 7900 | 24400 | 52500 | 0.08 | 7.8 | 31.89 | 0.91 | 0 | 0.00 |
+| 1 | 2001 | 10100 | 32100 | 121700 | 0.0 | 0.0 | 41.02 | 9.83 | 0 | 8.35 |
+| 2 | 2001 | 16000 | 81300 | 1239900 | 0.47 | 46.9 | 41.26 | 10.08 | 0 | 16.69 |
+
+Tam kare boyutu: 12734-14422 bayt (JSON satırı).
+
+**C. Şişirilmiş tam kareler (yalnız ölçeklenme göstergesi; gerçek kare boyutu ÖLÇÜLMEDİ)** (`5.0` satır/sn, senaryo başına `60.0` sn, `--pad-kb 256`, win32 Python 3.12.10, 16 mantıksal CPU):
+
+| Abone | Yayın sayısı | `publish` p50 (ns) | p99 (ns) | en çok (ns) | CPU % | CPU µs/satır | RSS (MB) | RSS artışı (MB) | gap | gönderilen (MB) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 301 | 24600 | 66900 | 242600 | 0.0 | 0.0 | 64.8 | 1.23 | 0 | 0.00 |
+| 1 | 301 | 27900 | 85800 | 91500 | 0.0 | 0.0 | 76.37 | 11.0 | 0 | 22.07 |
+| 2 | 301 | 30400 | 101400 | 167300 | 0.05 | 103.8 | 77.57 | 12.84 | 0 | 44.14 |
+
+Tam kare boyutu: 274895-276583 bayt (JSON satırı).
+
+Bu sayıları şöyle okuyun: (1) golden kareler küçüktür; gerçek tam karenin boyutu ÖLÇÜLMEDİ ve çok daha büyüktür, `--pad-kb`
+satırı yalnız ölçeklenmeyi göstermek içindir; (2) Windows'ta süreç CPU saatinin çözünürlüğü ~15,6 ms'dir: `0.0`/`0.03` gibi CPU% değerleri "ölçüm çözünürlüğünün altında"
+demektir, "sıfır" değil; CPU µs/satır sütunu bu yüzden anlamsızdır (yalnız B tablosu, 20 sn'de 2000 satır, kabaca yorumlanabilir);
+(3) RSS artışı halkanın dolmasını (`live_ring_seconds`) ve abone iş parçacıklarını içerir; senaryolar ayrı süreçtir ve her biri ~30 MB taban RSS ile başlar; (4) Windows saati ve Python sürümü Linux'tan farklıdır: bu `publish` süreleri Linux'ta
+ölçülecek değerleri TEMSİL ETMEZ; (5) oyun sunucusu, gerçek ağ ya da Zero Zone bağlı değil. Yeniden üretmek:
+
+```bash
+python scripts/live_bench.py --rate 5 --seconds 60            # tablo
+python scripts/live_bench.py --rate 100 --seconds 20 --json   # 20x hızlı, daha çok örnek
+python scripts/live_bench.py --rate 5 --seconds 60 --pad-kb 256
+```
+
+#### 10.5.7 Kapatma
+
+Config'te `export_live_enabled` `false` yapıp okuyucuyu (iki maç arasında) yeniden başlatın; iki yol yine 404 olur. Zero Zone
+tarafında ayrıca yönetici panelinden "acil durdur" (bellek içi; yeniden başlatmada kalkar) ve `sources[].enabled` ile `live.servers`
+kapatılabilir. Sızıntı şüphesinde token'ı döndürün (bölüm 10.3).
+
 ## 11. Konteyner yeniden oluşturma ve oyun güncellemesi
 
 ### 11.1 Konteyner yeniden oluşturuldu (`expected_container_id` değişir)
@@ -615,6 +773,8 @@ sudo systemctl enable --now sqreader@7788.service
 Kendi `server_id`si (`zz-7788`), veri dizini, stats DB'si, token'ı ve HTTP portu (8788) vardır. 7787'nin
 dizinini ya da token'ını **paylaşmayın**: okuyucu başka `server_id`'nin verisi olan dizinde başlamayı reddeder.
 nginx'te 7788 bloğu yorumdadır (bölüm 10) ve Zero Zone'da 7788 için AYRI bir SquadJS süreci gerekir (kendi benzersiz `server.id`, kendi `config.json`, yalnız kendi kaynağını içeren `sources`; bölüm 10.2).
+
+**Canlı yayın 7788 için AÇILMAZ.** `sqreader.7788.config.json.example` içinde `export_live_enabled` `false` kalır, Zero Zone'da `live.servers`'a 7788 eklenmez; ayrıca ölçüm ve bilinçli karar olmadan açılmaz (bölüm 10.5).
 
 ## 13. Kayıt saklama (retention)
 
@@ -700,6 +860,9 @@ df -h /var/lib/sqreader
 
 Sonuçlara göre unit'teki `CPUQuota`, `MemoryMax`, `Nice` ayarlanır (`sudo systemctl edit sqreader@7787`).
 `CPUQuota` çok düşükse tick gecikir ve replay seyrekleşir; çok yüksekse oyunla yarışır.
+
+Canlı yayın açılırsa (bölüm 10.5) ölçümü ayrıca yapın: yayın kapalı / açık-abonesiz / bir abone (Zero Zone bağlı) durumlarını
+aynı komutlarla karşılaştırın (bölüm 10.5.6). Bu makinede canlı yayın için hiçbir ölçüm yapılmadı.
 
 **Kayıt boyutu için kaba tahmin yöntemi (rakam uydurmadan).** İlk birkaç maçtan sonra ölçün:
 
@@ -792,6 +955,7 @@ Kaldırma oyun sunucusunu etkilemez. Zero Zone'da ilgili `sources` girdisini kap
 - `--pid` kullanılmaz; PID sabitlenmez. `kernel.yama.ptrace_scope` değiştirilmez.
 - Okuyucu root olarak çalıştırılmaz (yalnız geçici teşhis, bölüm 7.6).
 - Dış ağ, merkezi gönderim, otomatik güncelleme, Discord bildirimi yoktur.
+- Canlı yayın (`export_live_enabled`) varsayılan KAPALIdır, yalnız token korumalı Export yolunda vardır ve 7788 için açılmaz (bölüm 10.5).
 - HTTP tüm arayüzlere açılmaz; token config'e/depoya yazılmaz.
 - Otomatik `git pull`/güncelleme yoktur; yükseltme ELLE ve sabit commit ile yapılır.
 
@@ -824,6 +988,9 @@ kurulumda sırayla yapılmalıdır:
 | 20 | Ölçütsüz `serve` (Export API açık, `squad_port`/`squad_query_port`/`expected_container_id` yok) çıkış 2 ile reddediliyor; `require_target` davranışı | bölüm 5.2 (anahtar tablosu); gerçek host |
 | 21 | Token üretim komutu (`sudo sh -c 'umask 077; openssl rand -hex 32 > ...'`), izinler ve `sqreader` kullanıcısının okuyabilmesi | bölüm 5.1 (Linux host, sudo/chown) |
 | 22 | nginx `client_max_body_size 32k` ile 100 kimlikli ack paketinin (ZZ tarafında en çok 3800 bayt; reader sınırı 24576) 200 dönmesi ve control isteğinin (<= 4096 bayt) sınırda çalışması | `sudo nginx -t`; ZZ ack kuyruğu (ZZ `CANLI-DOGRULAMA.md` G2) |
+| 23 | Canlı yayın (`export_live_enabled: true`): SSE'nin nginx arkasında donmadan akması (`proxy_buffering off`, `gzip off`, `limit_conn`), `hb` olaylarının 5 sn'de bir gelmesi, 3. abonenin 503 `live_busy` alması | bölüm 10.5.4-10.5.5; gerçek nginx + Linux host gerekir |
+| 24 | Canlı yayının gerçek oyun sunucusunda CPU/RAM etkisi (0/1/2 abone); tick süresine etkisi | bölüm 10.5.6 (yalnız Windows'ta sentetik golden ile yerel ölçüm var; gerçek sunucuda ÇALIŞTIRILMADI) |
+| 25 | Gerçek kare boyutu (golden'daki 8 oyunculu kare gerçeği temsil etmez) ve `live_ring_max_mb` yeterliliği | canlıda `GET /health/deep` `live.ringBytes` (yalnız loopback) |
 
 ### 18.1 `dogrula.sh` ve Zero Zone canlı doğrulama listesi
 

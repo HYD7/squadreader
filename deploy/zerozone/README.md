@@ -27,6 +27,7 @@ yeniden başlatılmaz; Docker soketi verilmez; hiçbir konteyner ayrıcalıklı 
 ## Upstream'den sapmalar (fork değişiklik notu)
 
 - Upstream'den davranış sapması: config dosyası VAR ama bozuksa ya da boşsa (geçersiz JSON, boş dosya, JSON nesnesi olmayan içerik, okunamayan dosya) `sqreader/config.py` sessizce varsayılana dönmez; `ConfigError` fırlatır ve her komut çıkış kodu 2 ile durur (upstream varsayılanlarla devam ederdi ve oyun portu ölçütünü kaybedip bulduğu ilk sunucuya bağlanabilirdi). Config dosyası hiç yoksa upstream'in sıfır-config davranışı aynen sürer.
+- Fork özelliği, upstream'de YOK, varsayılan KAPALI: Export API üzerinde **canlı yayın** (`GET /export/v1/live/stream` SSE + `GET /export/v1/live/snapshot`; `sqreader/livehub.py`, `sqreader/live_fake.py`). Config anahtarları `export_live_enabled` (false), `live_max_clients` (2), `live_ring_seconds` (30), `live_ring_max_mb` (32). Kapalıyken iki yol da 404 döner; hiçbir zaman herkese açık `/stream` ya da `/latest` yoktur, yalnız token korumalı Export yolu vardır. Akış ham EOS/ad/adres taşır; temizleme yalnız Zero Zone sunucu tarafında yapılır (`PRIVACY.md`). Canlı yayın kapalıyken tick döngüsüne eklenen maliyet bir `None` denetimidir. Açma, sınırlar, nginx ve CPU/RAM ölçümü: KURULUM-TR.md bölüm 10.5. 7788 için açılmaz.
 
 Lisans: AGPL-3.0-or-later + Commons Clause. `LICENSE` ve `NOTICE` korunur (bkz.
 KURULUM-TR.md, son bölüm).

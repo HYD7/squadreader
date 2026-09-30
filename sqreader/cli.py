@@ -756,6 +756,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # SquadGameServer found".
     if config.require_target_enabled(getattr(args, "export_token_file", None)):
         config.require_target_criteria()
+    config.live_settings()      # validate live_* now (ConfigError -> exit 2)
     stats_db = getattr(args, "stats_db", None)
     if stats_db:
         discovery.check_stats_db_server_id(Path(stats_db).expanduser(),
@@ -763,6 +764,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return discovery.reattach_loop(lambda: _serve_once(args),
                                    on_lost=_announce_lost(args),
                                    sleep=lambda d: time.sleep(d))
+
+
+def _live_publish(hub: Any, line: str, kind: str, snap: dict | None,
+                  tick: int) -> None:
+    """Hand one ready-made tick line to the live hub (fork feature). O(1) on the
+    tick thread: encoding and socket writes happen on the subscribers' threads.
+    Whatever goes wrong here is logged and swallowed: the live stream may never
+    cost the reader a tick."""
+    try:
+        gs = snap.get("gameState") if snap is not None else None
+        if not isinstance(gs, dict):
+            gs = {}
+        hub.publish(line, kind, gs.get("matchId"), gs.get("matchState"))
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[tick {tick}] live publish error: {e!r}", file=sys.stderr)
 
 
 def _serve_once(args: argparse.Namespace) -> int:
@@ -870,9 +886,14 @@ def _serve_once(args: argparse.Namespace) -> int:
     # builds / is the cache thrashing?" from one curl.
     stats_state: dict = {"tick": 0, "lastBuildMs": None, "avgBuildMs": None,
                          "startedAt": time.time()}
+    # Live stream hub (fork feature): built below, only when
+    # `export_live_enabled` is true AND the Export API is on.
+    live_hub: Any = None
 
     def _deep_health() -> dict:
+        live_part = ({"live": live_hub.stats()} if live_hub is not None else {})
         return {
+            **live_part,
             "pid": pid,
             "readerState": _export_reader_state(),
             "target": ({
@@ -1261,10 +1282,18 @@ def _serve_once(args: argparse.Namespace) -> int:
         return {"id": cur.path.stem, "startedAtUtc": cur.started_at.isoformat(),
                 "sizeBytes": size}
 
+    _live_cfg = config.live_settings()
+    if _live_cfg["enabled"]:
+        from .livehub import LiveHub
+        live_hub = LiveHub(
+            server_id=args.server_id, hz=args.hz, two_tier=False,
+            max_clients=_live_cfg["max_clients"],
+            ring_seconds=_live_cfg["ring_seconds"],
+            ring_max_mb=_live_cfg["ring_max_mb"])
     export_api = configure_export(
         getattr(args, "export_token_file", None) or config.get("export_token_file"),
         server_id=args.server_id, stats_db=stats_db_path,
-        recordings_dir=recordings_dir,
+        recordings_dir=recordings_dir, live=live_hub,
         squad_port=(target.game_port if target is not None
                     and target.game_port is not None
                     else config.get("squad_port")),
@@ -1276,6 +1305,10 @@ def _serve_once(args: argparse.Namespace) -> int:
         target_info=lambda: _target_info(target),
         degraded_reasons=lambda: (["scanner_suspect"]
                                   if stats_state.get("scannerSuspect") else []))
+    if live_hub is not None and export_api is None:
+        print("  export_live_enabled is set but the Export API is off (no usable "
+              "--export-token-file): live stream NOT served", file=sys.stderr)
+        live_hub = None
     srv = serve_in_background(args.host, args.port, beat,
                               recordings_dir=recordings_dir,
                               icons_dir=icons_dir,
@@ -1293,6 +1326,8 @@ def _serve_once(args: argparse.Namespace) -> int:
     feature_list = ["/health"]
     if export_api is not None:
         feature_list.append("/export/v1")
+    if live_hub is not None:
+        feature_list.append("/export/v1/live/stream")
     if recordings_dir:
         feature_list.append("/api/recordings")
     if icons_dir:
@@ -1355,6 +1390,8 @@ def _serve_once(args: argparse.Namespace) -> int:
             sample_positions = None
             write_position_frame = None
         else:
+            if live_hub is not None:
+                live_hub.set_two_tier(True)
             period = 1.0 / record_hz
             print(f"  two-tier: full ~{args.hz:g} Hz (bg process) + positions "
                   f"{record_hz:g} Hz -> {period*1000:.0f}ms slot; pid {pid}",
@@ -1435,6 +1472,8 @@ def _serve_once(args: argparse.Namespace) -> int:
                 log_tailer.drain(), snap.get("players") or [])
         line = json.dumps(snap, ensure_ascii=False) + "\n"
         beat.mark()
+        if live_hub is not None:
+            _live_publish(live_hub, line, "full", snap, tick)
         if out_f:
             out_f.write(line)
             out_f.flush()
@@ -1508,6 +1547,8 @@ def _serve_once(args: argparse.Namespace) -> int:
                         pos = sample_positions(pm, paths, entities, tick, ts)
                         pos_line = json.dumps(pos, ensure_ascii=False) + "\n"
                         beat.mark()
+                        if live_hub is not None:
+                            _live_publish(live_hub, pos_line, "pos", None, tick)
                         if out_f:
                             out_f.write(pos_line)
                             out_f.flush()
@@ -1689,6 +1730,8 @@ def _serve_once(args: argparse.Namespace) -> int:
         _flush_push()  # best-effort: push whatever finalized before we exit
         if placer_cache_path is not None:
             _save_placer_cache(caches, placer_cache_path)  # keep placers
+        if live_hub is not None:
+            live_hub.close()    # ends the SSE writers so the port can be released
         srv.shutdown()
         srv.server_close()      # release the port: a re-attach binds it again
         if out_f:

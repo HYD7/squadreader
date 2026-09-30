@@ -172,7 +172,26 @@ DEFAULTS: dict[str, Any] = {
     # set), i.e. in every Zero Zone deployment and nowhere else; true / false
     # force it. Stock upstream behaviour (no criteria needed) is unchanged.
     "require_target": None,
+
+    # --- live stream over the Export API (fork feature, sqreader/livehub.py) ---
+    # OFF by default. When true (and the Export API itself is on) the reader
+    # serves GET /export/v1/live/stream (SSE) and /export/v1/live/snapshot behind
+    # the same Bearer token; when false both are a plain 404. There is never a
+    # public /stream or /latest. Must be a JSON boolean.
+    "export_live_enabled": False,
+    # Simultaneous live subscribers; the next one gets 503 `live_busy`. The tick
+    # thread only enqueues, so each extra client costs memory and a thread.
+    "live_max_clients": 2,
+    # Ring of recent frames (for the snapshot and Last-Event-ID resume): the
+    # newest N seconds, and never more than this many MB.
+    "live_ring_seconds": 30,
+    "live_ring_max_mb": 32,
 }
+
+#: Allowed (inclusive) ranges of the live_* settings.
+LIVE_MAX_CLIENTS_RANGE = (1, 8)
+LIVE_RING_SECONDS_RANGE = (5, 120)
+LIVE_RING_MAX_MB_RANGE = (1, 256)
 
 _cache: dict[str, Any] | None = None
 
@@ -216,6 +235,33 @@ def _load() -> dict[str, Any]:
 def get(key: str) -> Any:
     """Config value for ``key`` (config file overrides the built-in default)."""
     return _load().get(key, DEFAULTS.get(key))
+
+
+def _live_int(key: str, lo_hi: tuple[int, int]) -> int:
+    v = get(key)
+    lo, hi = lo_hi
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise ConfigError(
+            f"{key} {lo}-{hi} aralığında bir tam sayı olmalı: {v!r}. / "
+            f"{key} must be an integer between {lo} and {hi}.")
+    return v
+
+
+def live_settings() -> dict[str, Any]:
+    """The validated live-stream settings. Raises ``ConfigError`` for a value
+    outside its range (or a non-boolean ``export_live_enabled``: the string
+    "false" must not silently switch a live feed on)."""
+    enabled = get("export_live_enabled")
+    if not isinstance(enabled, bool):
+        raise ConfigError(
+            f"export_live_enabled true ya da false olmalı: {enabled!r}. / "
+            f"export_live_enabled must be a JSON boolean.")
+    return {
+        "enabled": enabled,
+        "max_clients": _live_int("live_max_clients", LIVE_MAX_CLIENTS_RANGE),
+        "ring_seconds": _live_int("live_ring_seconds", LIVE_RING_SECONDS_RANGE),
+        "ring_max_mb": _live_int("live_ring_max_mb", LIVE_RING_MAX_MB_RANGE),
+    }
 
 
 def require_target_enabled(export_token_file: Any = None) -> bool:
@@ -344,5 +390,5 @@ def find_squad_server_pid() -> int:
         raise SystemExit(str(e)) from e
 
 
-__all__ = ["DEFAULTS", "get", "find_squad_server_pid",
+__all__ = ["DEFAULTS", "get", "live_settings", "find_squad_server_pid",
            "resolve_game_process", "discovery_criteria"]

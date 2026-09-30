@@ -52,6 +52,39 @@ only accepts matches from agents it enrolled.
 set `push_enabled: false`. Data you already pushed lives on the central
 platform — deleting it there is that operator's responsibility; ask them.
 
+## Live stream over the Export API (Zero Zone fork, off by default)
+
+This fork can serve the **in-progress** match to one consumer (the Zero Zone web
+server) as a live stream: `GET /export/v1/live/stream` (Server-Sent Events) and
+`GET /export/v1/live/snapshot`. Read this before turning it on.
+
+- **Off by default.** It exists only when the config has `export_live_enabled: true`
+  *and* the Export API is on (a usable token file). Otherwise both paths answer 404.
+- **Only on the token-protected Export path.** There is no public `/stream` or
+  `/latest`; the reader's public HTTP routes never carry live data. Both live paths
+  need the same `Authorization: Bearer <token>` as the rest of the Export API, and
+  at most `live_max_clients` (default 2) consumers can be attached at once.
+- **It is raw, not sanitised.** Each event is the reader's own tick line, byte for
+  byte: it contains **EOS ids, in-game player names, memory addresses**
+  (`_addr`, `leaderStateAddr`), `isAdmin` and positions of every player, live. The
+  reader does not filter any of it.
+- **It is cleaned only on the Zero Zone server side.** Anonymisation (pseudonymous
+  ids, no addresses, no `isAdmin`, hidden profiles shown as "Gizli Oyuncu"), the
+  publication delay (default 600 s, never below 180 s) and the players' privacy
+  preferences are applied by Zero Zone before anything reaches a browser. If you
+  point any other consumer at this endpoint, *you* are responsible for that step.
+  Treat the token like a credential to your players' identities: anyone holding it
+  can read raw live data.
+- **Nothing is written to disk by the live feature.** The reader keeps only a short
+  in-memory ring of recent frames (`live_ring_seconds`, default 30 s, at most
+  `live_ring_max_mb`, default 32 MB), gone on restart. Match recordings (`.sqrx`)
+  are a separate, existing store (see the table above).
+- **Not for the second server.** Zero Zone's deployment does not enable it for
+  port 7788.
+
+To stop: set `export_live_enabled` to `false` (default) and restart the reader;
+rotate the export token if you suspect it leaked.
+
 ## How to delete data
 
 - **One match:** delete its `.sqrx` and `.meta.json` under `recordings/`.

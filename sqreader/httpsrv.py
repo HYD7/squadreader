@@ -2,11 +2,14 @@
 Tiny HTTP server that serves finished match replays + persistent stats.
 Pure stdlib — no aiohttp/FastAPI dependency.
 
-This is the DISTRIBUTED (operator) build: it deliberately serves NO live
-view of the running match. There is no SSE tick stream, no latest-snapshot
-endpoint, and only fully finalized recordings are served — an in-progress
-(near-live) recording is refused. Watching a live match is a private-fork
-capability, not something this build can expose. See docs/ for the rationale.
+This is the DISTRIBUTED (operator) build: it deliberately serves NO public
+live view of the running match. There is no public SSE tick stream (`/stream`)
+and no public latest-snapshot endpoint (`/latest`), and only fully finalized
+recordings are served — an in-progress (near-live) recording is refused.
+The only live surface is the fork feature on the token-protected Export path
+(`/export/v1/live/stream` and `/export/v1/live/snapshot`, Bearer token, off
+unless config `export_live_enabled`; see livehub.py / export_api.py). There
+are no public `/stream` / `/latest` endpoints. See docs/ for the rationale.
 
 Endpoints
 ---------
@@ -20,6 +23,8 @@ Endpoints
     GET /api/recording/<id>/meta  just the sidecar metadata for one file
     GET /export/v1/*            token-protected read-only Export API
                                 (export_api.py); a plain 404 unless enabled
+    GET /export/v1/live/stream  token-protected SSE live stream (fork feature,
+                                off by default; written by `_stream_live`)
 
 The `/api/recordings*` endpoints only activate when the server is
 started with a `recordings_dir` (passed through from
@@ -31,6 +36,7 @@ import http.server
 import json
 import os
 import re
+import socket
 import socketserver
 import threading
 import time
@@ -81,6 +87,10 @@ _ICON_MIME = {
 # the bare basename (no path, no extension). Restrict to safe chars.
 _SQMAP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SQMAP_EXTS = (".webp", ".png", ".jpg", ".jpeg")
+
+# Socket write timeout of a live SSE subscriber: a peer that has not accepted
+# any bytes for this long is dropped (its slot is freed for the next client).
+_LIVE_WRITE_TIMEOUT_SEC = 10.0
 
 
 class _TickBeat:
@@ -485,9 +495,15 @@ def _make_handler(
                 # PUT/DELETE/... with a body: 405, body never read -> do not
                 # keep the connection alive over it.
                 self.close_connection = True
+            lei = self.headers.get("Last-Event-ID")
+            if lei is not None:
+                extra["last_event_id"] = lei
             res = export_api.handle(method, self.path,
                                     self.headers.get("Authorization"), **extra)
             head = method == "HEAD"
+            if getattr(res, "live", None) is not None:
+                self._stream_live(res.live)
+                return
             if res.recording is not None:
                 self._stream_recording(
                     res.recording.path, res.recording.rec_id, cacheable=False,
@@ -502,6 +518,55 @@ def _make_handler(
             if not head:
                 self.wfile.write(res.body)
             self._drain_unread()
+
+        def _stream_live(self, sub: Any) -> None:
+            """Write one live subscription as Server-Sent Events.
+
+            This request thread IS the subscriber thread: it encodes (in
+            `sub.events()`) and writes; the tick thread only ever enqueues.
+            HTTP/1.1 gets chunked framing, an HTTP/1.0 client a close-delimited
+            body. A peer that stops reading is dropped after the 10 s socket
+            write timeout; a vanished peer ends the loop on the first failed
+            write. Either way the subscriber slot is released in `finally`.
+            """
+            try:
+                chunked = self.request_version == "HTTP/1.1"
+                if chunked:
+                    self.protocol_version = "HTTP/1.1"
+                self.close_connection = True
+                self.connection.settimeout(_LIVE_WRITE_TIMEOUT_SEC)
+                try:
+                    self.connection.setsockopt(
+                        socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.flush()
+                for data in sub.events():
+                    if not data:
+                        continue
+                    if chunked:
+                        self.wfile.write(
+                            f"{len(data):x}\r\n".encode("ascii") + data + b"\r\n")
+                    else:
+                        self.wfile.write(data)
+                    sub.sent(len(data))
+                if chunked:
+                    self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (OSError, ValueError):
+                # BrokenPipe / ConnectionReset / socket.timeout are OSErrors:
+                # the subscriber simply drops.
+                pass
+            finally:
+                sub.close()
 
         def _export_post_input(self) -> dict[str, Any]:
             """What a POST to the Export API needs from the transport: the

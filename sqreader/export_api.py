@@ -17,6 +17,9 @@ download, and all need ``Authorization: Bearer <token>``::
                                           exported (end never observed); no
                                           player data, no stats
     GET /export/v1/recordings/<recId>     NDJSON replay stream (gzip / zstd)
+    GET /export/v1/live/stream            SSE live stream (fork feature; only when
+                                          config export_live_enabled, else 404)
+    GET /export/v1/live/snapshot          last full live frame as JSON (same gate)
     POST /export/v1/control/recording     {"enabled", "reason", "actor"}: switch new
                                           recordings on/off (persistent, audited)
     POST /export/v1/ack                   {"recordings": [...]}: "I mirrored these"
@@ -25,6 +28,13 @@ The two POST endpoints are the ONLY writes. They change nothing but the recordin
 switch and the ack list (files in the data directory, see export_state.py); they
 take no path, run no command and change no other setting. A POST needs the same
 Bearer token, ``Content-Type: application/json`` and a body of at most 4 KB.
+
+Live stream (opt-in, fork feature)
+----------------------------------
+With ``export_live_enabled: true`` the two ``live`` endpoints above are served
+from the in-process `livehub.LiveHub`; otherwise both answer the same 404 as
+any unknown path. They need the same Bearer token. There is still no public
+``/stream`` / ``/latest``. Wire format and limits: livehub.py.
 
 What is exported
 ----------------
@@ -85,6 +95,7 @@ from .export_state import (
     recording_status,
 )
 from .ingest_client import SCHEMA_MATCH, build_match_bundle
+from .livehub import LiveHub
 from .recording_lifecycle import RECORDING_STATE_FINALIZED
 
 log = logging.getLogger("sqreader.export")
@@ -151,6 +162,8 @@ class ExportResponse:
     content_type: str = "application/json"
     headers: list[tuple[str, str]] = field(default_factory=list)
     recording: Optional[RecordingStream] = None
+    #: A `livehub.Subscriber` the transport must stream as SSE and close.
+    live: Any = None
 
 
 def _json(status: int, obj: Any, *, headers: Optional[list[tuple[str, str]]] = None
@@ -329,7 +342,8 @@ class ExportApi:
                  active_recording: Optional[Callable[[], Optional[dict]]] = None,
                  target_info: Optional[Callable[[], Optional[dict]]] = None,
                  degraded_reasons: Optional[Callable[[], list[str]]] = None,
-                 clock: Optional[Callable[[], float]] = None) -> None:
+                 clock: Optional[Callable[[], float]] = None,
+                 live: Optional[LiveHub] = None) -> None:
         if len(token) < MIN_TOKEN_LEN:
             raise ValueError(f"export token must be at least {MIN_TOKEN_LEN} characters")
         self._token = token.encode("utf-8")
@@ -355,6 +369,7 @@ class ExportApi:
         self._target_info = target_info
         self._degraded_reasons = degraded_reasons
         self._clock = clock if clock is not None else time.time
+        self._live = live
 
     #: The largest body ANY POST endpoint accepts (informational). The
     #: transport (httpsrv) reads `body_limit(path)` bytes at most, per endpoint,
@@ -380,11 +395,13 @@ class ExportApi:
     def handle(self, method: str, target: str, authorization: Optional[str], *,
                body: Optional[bytes] = None, content_type: Optional[str] = None,
                content_length: Optional[int] = None,
-               client_ip: Optional[str] = None) -> ExportResponse:
+               client_ip: Optional[str] = None,
+               last_event_id: Optional[str] = None) -> ExportResponse:
         """Answer one request. `target` is the raw request target
         (path plus query string); `authorization` the Authorization header.
         `body`, `content_type`, `content_length` and `client_ip` matter to POST
-        only (`body` is None when the transport refused to read it)."""
+        only (`body` is None when the transport refused to read it);
+        `last_event_id` is the SSE ``Last-Event-ID`` header of a live-stream GET."""
         path, _, query = target.partition("?")
         if method == "POST" and path in _POST_PATHS:
             if not self._authorized(authorization):
@@ -405,7 +422,8 @@ class ExportApi:
             return _error(401, "unauthorized",
                           headers=[("WWW-Authenticate", "Bearer")])
         try:
-            return self._route(path, query)
+            return self._route(path, query, method=method,
+                               last_event_id=last_event_id)
         except sqlite3.Error:
             return _error(503, "stats_unavailable")
 
@@ -417,7 +435,8 @@ class ExportApi:
             return False
         return hmac.compare_digest(value.strip().encode("utf-8"), self._token)
 
-    def _route(self, path: str, query: str) -> ExportResponse:
+    def _route(self, path: str, query: str, *, method: str = "GET",
+               last_event_id: Optional[str] = None) -> ExportResponse:
         prefix = "/export/v1/"
         if not path.startswith(prefix):
             return _not_found()
@@ -434,6 +453,10 @@ class ExportApi:
             return self._match(parts[1])
         if len(parts) == 2 and parts[0] == "recordings":
             return self._recording(parts[1])
+        if parts == ["live", "stream"]:
+            return self._live_stream(query, method, last_event_id)
+        if parts == ["live", "snapshot"]:
+            return self._live_snapshot(query)
         if parts in (["control", "recording"], ["ack"]):
             return _error(405, "method_not_allowed", headers=[("Allow", "POST")])
         return _not_found()
@@ -497,7 +520,7 @@ class ExportApi:
     # -- endpoints -----------------------------------------------------------
 
     def _info(self) -> ExportResponse:
-        return _json(200, {
+        body: dict[str, Any] = {
             "schema": SCHEMA_EXPORT,
             "readerVersion": __version__,
             "statsSchemaVersion": self._stats_schema_version(),
@@ -505,7 +528,34 @@ class ExportApi:
             "squadPort": self._squad_port,
             "containerId": self._container_id,
             "readerState": self._state(),
-        })
+        }
+        if self._live is not None:      # only when the live stream is enabled
+            body["live"] = self._live.info()
+        return _json(200, body)
+
+    def _live_stream(self, query: str, method: str,
+                     last_event_id: Optional[str]) -> ExportResponse:
+        if self._live is None:
+            return _not_found()
+        if method != "GET":
+            return _error(405, "method_not_allowed", headers=[("Allow", "GET")])
+        if query:
+            return _error(400, "bad_query")
+        sub = self._live.subscribe(last_event_id)
+        if sub is None:
+            return _error(503, "live_busy", headers=[("Retry-After", "5")])
+        return ExportResponse(200, b"", "text/event-stream", live=sub)
+
+    def _live_snapshot(self, query: str) -> ExportResponse:
+        if self._live is None:
+            return _not_found()
+        if query:
+            return _error(400, "bad_query")
+        body = self._live.snapshot_bytes()
+        if body is None:
+            return _error(503, "live_no_frame", headers=[("Retry-After", "1")])
+        return ExportResponse(200, body, "application/json",
+                              [("Cache-Control", "no-store")])
 
     def _health(self) -> ExportResponse:
         readable = False

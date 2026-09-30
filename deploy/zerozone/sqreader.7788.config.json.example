@@ -94,6 +94,25 @@
   ],
   "export_state_dir": null,
 
+  "_live_comment": [
+    "CANLI YAYIN (varsayilan KAPALI): Export API uzerinde SSE (GET /export/v1/live/stream) ve",
+    "GET /export/v1/live/snapshot. Ayni Bearer token korur; export_live_enabled false iken",
+    "ikisi de 404'tur. Akis HAM veri tasir (EOS, oyuncu adi, bellek adresleri): yalniz Zero Zone",
+    "sunucu tarafinda temizlenir (PRIVACY.md). Acmak icin export_live_enabled: true (JSON",
+    "boolean; \"true\" metni reddedilir) ve en az 32 karakterlik token dosyasi gerekir.",
+    "live_max_clients: ayni anda en cok bu kadar abone (1-8); sonraki 503 live_busy alir.",
+    "live_ring_seconds (5-120) ve live_ring_max_mb (1-256): son karelerin halkasi (yeniden",
+    "baglanma ve snapshot icin); hangisi once dolarsa. Degerler kodun varsayilanlaridir",
+    "(sqreader/config.py). Aralik disi deger reader'i hata (cikis 2) ile durdurur.",
+    "7788 ICIN CANLI YAYIN ACILMAZ: export_live_enabled false kalir (yalniz 7787 icin,",
+    "bilincli kararla ve olculdukten sonra). KURULUM-TR.md bolum 10.5, 12.",
+    "OLCULMEDI: gercek sunucuda CPU/RAM etkisi bilinmiyor."
+  ],
+  "export_live_enabled": false,
+  "live_max_clients": 2,
+  "live_ring_seconds": 30,
+  "live_ring_max_mb": 32,
+
   "_retention_comment": [
     "Kayit saklama anahtarlari (sqreader retention ve kaydedicinin disk-dusuk korumasi).",
     "Degerler kodun varsayilanlaridir (sqreader/config.py), OLCULMEDI: disk boyutuna gore ayarlayin.",

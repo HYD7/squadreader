@@ -1,0 +1,193 @@
+// Administrator SSE source: event mapping (frame / match / reset / hb),
+// reconnect with back-off after the browser gives up, silence watchdog, and the
+// ticket staying in the URL only. Fake EventSource + timers.
+import {
+  createSseSource, ADMIN_RENDER_DELAY_MS, SSE_SILENCE_MS, SSE_GIVE_UP_AFTER,
+  type EventSourceLike, type MessageEventLike,
+} from "./sseSource.ts";
+import type { SourceEvent } from "./liveUrls.ts";
+import { fakeTimers } from "./fakeTimers.ts";
+
+let passed = 0, failed = 0;
+function ok(cond: unknown, msg: string) {
+  if (cond) { passed++; } else { failed++; console.error("  FAIL:", msg); }
+}
+function eq(a: unknown, b: unknown, msg: string) {
+  ok(JSON.stringify(a) === JSON.stringify(b),
+     `${msg} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`);
+}
+
+eq(ADMIN_RENDER_DELAY_MS, 2000, "admin render delay is 2000 ms (K7)");
+
+class FakeES implements EventSourceLike {
+  readyState = 0;
+  onopen: ((ev: unknown) => void) | null = null;
+  onerror: ((ev: unknown) => void) | null = null;
+  closed = false;
+  private handlers = new Map<string, ((ev: MessageEventLike) => void)[]>();
+  constructor(public url: string) {}
+  addEventListener(type: string, fn: (ev: MessageEventLike) => void) {
+    const l = this.handlers.get(type) ?? [];
+    l.push(fn);
+    this.handlers.set(type, l);
+  }
+  close() { this.closed = true; this.readyState = 2; }
+  // test drivers
+  open() { this.readyState = 1; this.onopen?.({}); }
+  emit(type: string, data: unknown) {
+    for (const fn of this.handlers.get(type) ?? []) fn({ data });
+  }
+  fail(closed: boolean) { this.readyState = closed ? 2 : 0; this.onerror?.({}); }
+}
+
+function setup() {
+  const timers = fakeTimers();
+  const events: SourceEvent[] = [];
+  const streams: FakeES[] = [];
+  const src = createSseSource({
+    server: "zz-7787", ticket: "secret-ticket-123",
+    onEvent: (e) => events.push(e), timers, random: () => 0.5,
+    factory: (url) => { const s = new FakeES(url); streams.push(s); return s; },
+  });
+  return { timers, events, streams, src };
+}
+const conns = (evs: SourceEvent[]) =>
+  evs.filter((e) => e.type === "conn").map((e) => (e as { state: string }).state);
+
+// --- URL and connect
+{
+  const { events, streams, src } = setup();
+  src.start();
+  eq(streams.length, 1, "one EventSource opened");
+  eq(streams[0]!.url,
+     "/admin/api/squadreader/canli/zz-7787/akis?bilet=secret-ticket-123",
+     "stream url carries the ticket in the query only");
+  ok(streams[0]!.url.startsWith("/"), "same-origin path");
+  streams[0]!.open();
+  eq(conns(events), ["connecting", "live"], "connecting then live");
+  ok(!JSON.stringify(events).includes("secret-ticket-123"), "the ticket is never in an event");
+  src.stop();
+}
+
+// --- event mapping
+{
+  const { events, streams, src } = setup();
+  src.start();
+  const es = streams[0]!;
+  es.open();
+  es.emit("frame", JSON.stringify({ timestamp: "2026-09-30T10:00:00Z", players: [] }));
+  es.emit("frame", "not json");
+  es.emit("frame", "");
+  es.emit("match", JSON.stringify({ matchId: "m-1", state: "ended" }));
+  es.emit("match", JSON.stringify({ matchId: 77, state: "started" }));
+  es.emit("match", JSON.stringify({ nope: 1 }));
+  es.emit("reset", "{}");
+  es.emit("reset", JSON.stringify({ epoch: 4 }));
+  es.emit("hb", "");
+  const lines = events.filter((e) => e.type === "line").map((e) => (e as { obj: unknown }).obj);
+  eq(lines.length, 3, "one frame + two resets become lines (bad json dropped)");
+  eq((lines[0] as { timestamp: string }).timestamp, "2026-09-30T10:00:00Z", "frame payload");
+  eq(lines[1], { t: "reset" }, "reset without epoch");
+  eq(lines[2], { t: "reset", epoch: 4 }, "reset with epoch");
+  const matches = events.filter((e) => e.type === "match") as
+    unknown as { matchId: string | null; state: string }[];
+  eq(matches.map((m) => [m.matchId, m.state]), [["m-1", "ended"], ["77", "started"]], "match events");
+  src.stop();
+}
+
+// --- network blip (browser retries itself): reconnecting, no new EventSource
+{
+  const { events, streams, src } = setup();
+  src.start();
+  streams[0]!.open();
+  streams[0]!.fail(false);
+  eq(conns(events).pop(), "reconnecting", "browser retry shows reconnecting");
+  eq(streams.length, 1, "no second EventSource while the browser retries");
+  streams[0]!.open();
+  eq(conns(events).pop(), "live", "live again after the browser reconnects");
+  src.stop();
+}
+
+// --- the browser gave up (CLOSED): reopen with growing back-off
+{
+  const { timers, events, streams, src } = setup();
+  src.start();
+  streams[0]!.open();
+  streams[0]!.fail(true);
+  ok(streams[0]!.closed, "dead stream is closed");
+  eq(conns(events).pop(), "reconnecting", "reconnecting after a closed stream");
+  await timers.advance(1000);
+  eq(streams.length, 2, "reopened after the first back-off");
+  ok(streams[1]!.url === streams[0]!.url, "same url on reconnect");
+  streams[1]!.fail(true);
+  await timers.advance(1000);
+  eq(streams.length, 2, "second back-off is longer than 1 s");
+  await timers.advance(2000);
+  eq(streams.length, 3, "third stream after ~2 s");
+  streams[2]!.open();
+  eq(conns(events).pop(), "live", "live again");
+  // a successful open resets the back-off
+  streams[2]!.fail(true);
+  await timers.advance(1000);
+  eq(streams.length, 4, "back-off restarts at 1 s after a success");
+  src.stop();
+}
+
+// --- many failures in a row without ever opening: state becomes closed, keeps trying
+{
+  const { timers, events, streams, src } = setup();
+  src.start();
+  for (let i = 0; i < SSE_GIVE_UP_AFTER + 1; i++) {
+    streams[streams.length - 1]!.fail(true);
+    await timers.advance(40_000);
+  }
+  ok(conns(events).includes("closed"), "closed after repeated failures");
+  ok(streams.length > SSE_GIVE_UP_AFTER, "still retrying");
+  src.stop();
+}
+
+// --- watchdog: silence for SSE_SILENCE_MS reconnects; hb keeps it alive
+{
+  const { timers, streams, src } = setup();
+  src.start();
+  streams[0]!.open();
+  await timers.advance(SSE_SILENCE_MS - 5000);
+  streams[0]!.emit("hb", "");
+  await timers.advance(SSE_SILENCE_MS - 5000);
+  eq(streams.length, 1, "hb resets the watchdog");
+  await timers.advance(10_000);
+  ok(streams[0]!.closed, "silent stream is closed by the watchdog");
+  await timers.advance(2_000);
+  eq(streams.length, 2, "a new stream is opened after silence");
+  src.stop();
+}
+
+// --- stop closes the stream and cancels retries; restart opens a fresh one
+{
+  const { timers, streams, src } = setup();
+  src.start();
+  streams[0]!.open();
+  src.stop();
+  ok(streams[0]!.closed, "stop closes the stream");
+  await timers.advance(120_000);
+  eq(streams.length, 1, "nothing reopens after stop");
+  src.restart();
+  eq(streams.length, 2, "restart opens a new stream");
+  src.stop();
+}
+
+// --- events of a stale stream are ignored
+{
+  const { events, streams, src } = setup();
+  src.start();
+  const old = streams[0]!;
+  old.open();
+  src.restart();
+  const before = events.length;
+  old.emit("frame", JSON.stringify({ timestamp: "x", players: [] }));
+  eq(events.length, before, "old stream events are ignored");
+  src.stop();
+}
+
+console.log(`zz live sseSource: ${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);

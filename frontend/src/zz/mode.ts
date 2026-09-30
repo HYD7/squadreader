@@ -1,9 +1,10 @@
 // Zero Zone mode: pure helpers (no DOM, no import.meta) so they run under the
 // node test runner. The build-time constants live in build.ts.
 //
-// The Zero Zone build is a replay-only viewer served locally under /tekrar/.
-// It receives a Zero Zone match id (numeric) in `?mode=replay&id=<id>` and only
-// talks to relative endpoints of its own origin.
+// The Zero Zone build is a viewer served locally under /tekrar/. It receives a
+// Zero Zone match id (numeric) in `?mode=replay&id=<id>`, or a live feed in
+// `?mode=live&server=<id>` / `?mode=admin-live&server=<id>&bilet=<ticket>`, and
+// only talks to same-origin paths.
 
 /** Vite mode name selected by `npm run build:zerozone`. */
 export const ZZ_MODE_NAME = "zerozone";
@@ -19,14 +20,55 @@ export function isValidMatchId(id: string | null | undefined): id is string {
   return typeof id === "string" && ID_RE.test(id);
 }
 
+/** Live mode names. `live` = public, delayed, segment polling; `admin-live` =
+ *  administrator view over SSE, needs a short-lived ticket (`bilet`). */
+export type ZzLiveKind = "live" | "admin-live";
+
+/** Server ids (`zzServerId`) are short ASCII tokens, safe in a URL path. */
+const SERVER_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+
+export function isValidServerId(s: string | null | undefined): s is string {
+  return typeof s === "string" && SERVER_RE.test(s);
+}
+
+/** The ticket is opaque; only its size and character class are checked (no
+ *  control characters, no whitespace) before it goes into a query string. */
+const TICKET_RE = /^[!-~]{1,2048}$/;
+
+export function isValidTicket(s: string | null | undefined): s is string {
+  return typeof s === "string" && TICKET_RE.test(s);
+}
+
 export type ZzLocation =
   | { ok: true; id: string }
+  | { ok: true; kind: "live"; server: string }
+  | { ok: true; kind: "admin-live"; server: string; ticket: string }
   | { ok: false; reason: "no-id" | "bad-id" | "bad-mode" };
 
-/** Parse `location.search`. `mode` must be absent or "replay"; `id` required. */
+export type ZzLiveLocation = Extract<ZzLocation, { kind: ZzLiveKind }>;
+
+export function isLiveLocation(loc: ZzLocation): loc is ZzLiveLocation {
+  return loc.ok && "kind" in loc;
+}
+
+/**
+ * Parse `location.search`.
+ *  - replay: `mode` absent or "replay"; `id` required.
+ *  - live: `?mode=live&server=<zzServerId>`
+ *  - admin-live: `?mode=admin-live&server=<zzServerId>&bilet=<ticket>`
+ * A live mode with a missing/invalid server (or a missing ticket) is `bad-mode`.
+ */
 export function parseZzLocation(search: string): ZzLocation {
   const p = new URLSearchParams(search);
   const mode = p.get("mode");
+  if (mode === "live" || mode === "admin-live") {
+    const server = p.get("server");
+    if (!isValidServerId(server)) return { ok: false, reason: "bad-mode" };
+    if (mode === "live") return { ok: true, kind: "live", server };
+    const ticket = p.get("bilet");
+    if (!isValidTicket(ticket)) return { ok: false, reason: "bad-mode" };
+    return { ok: true, kind: "admin-live", server, ticket };
+  }
   if (mode !== null && mode !== "replay") return { ok: false, reason: "bad-mode" };
   const id = p.get("id");
   if (id === null || id === "") return { ok: false, reason: "no-id" };
@@ -57,6 +99,8 @@ export const TR = {
   failedSub: "Kayıt alınırken bir sorun oluştu. Bağlantınızı kontrol edip yeniden deneyin.",
   invalidId: "Geçersiz maç kimliği",
   invalidIdSub: "Adres, geçerli bir maç kimliği içermiyor. Tekrarı maç sayfasından açın.",
+  invalidAddress: "Geçersiz adres",
+  invalidAddressSub: "Adres tanınmayan bir kip ya da geçersiz bir sunucu bilgisi içeriyor. Canlı yayını sitedeki bağlantıdan açın.",
   retry: "Tekrar dene",
   back: "← Geri",
   backTitle: "Maç sayfasına dön",

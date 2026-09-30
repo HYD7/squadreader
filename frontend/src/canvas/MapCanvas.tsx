@@ -14,7 +14,7 @@ import type { Ruler } from "./ruler";
 // treated as continuing the last measurement rather than starting one.
 // Scaled by zoom so it stays about the same distance on screen.
 const EXTEND_SNAP_CM = 1500;
-import { useViewerStore, RENDER_DELAY_MS } from "../state/viewerStore";
+import { useViewerStore } from "../state/viewerStore";
 import { replayClock } from "../state/replayClock";
 import { DEFAULT_VIEW } from "../state/types";
 import type { Snapshot, ViewState } from "../state/types";
@@ -136,7 +136,7 @@ export function MapCanvas({ onHover, onLeave, onClick }: Props) {
           // clamp so the render clock can never regress. Decoupling from the
           // EMA is what removes the periodic hitch AND the jitter time-warp.
           const renderClock = Math.max(
-            performance.now() - RENDER_DELAY_MS,
+            performance.now() - s.renderDelayMs,
             lastRenderClockRef.current,
           );
           lastRenderClockRef.current = renderClock;

@@ -3,6 +3,7 @@
 import {
   isZeroZoneMode, isValidMatchId, parseZzLocation, metaUrl, recordingUrl,
   backUrl, classifyHttpStatus, errorText, normalizeSourceUrl, TR,
+  isValidServerId, isValidTicket, isLiveLocation,
 } from "./mode.ts";
 
 let passed = 0, failed = 0;
@@ -42,6 +43,42 @@ eq(parseZzLocation("?mode=replay&id=-5"), { ok: false, reason: "bad-id" }, "nega
 eq(parseZzLocation("?mode=replay&id=12%2F34"), { ok: false, reason: "bad-id" }, "encoded slash");
 eq(parseZzLocation("?mode=live&id=42"), { ok: false, reason: "bad-mode" }, "live mode refused");
 eq(parseZzLocation("?mode=home&id=42"), { ok: false, reason: "bad-mode" }, "home mode refused");
+
+// --- live modes
+eq(parseZzLocation("?mode=live&server=zz-7787"),
+   { ok: true, kind: "live", server: "zz-7787" }, "mode=live&server");
+eq(parseZzLocation("?server=zz-7787&mode=live&x=1"),
+   { ok: true, kind: "live", server: "zz-7787" }, "live: order and extra params ignored");
+eq(parseZzLocation("?mode=live&server=a.b_c:1-2"),
+   { ok: true, kind: "live", server: "a.b_c:1-2" }, "live: dot, underscore, colon, dash allowed");
+eq(parseZzLocation("?mode=admin-live&server=zz-7787&bilet=abc.DEF-123"),
+   { ok: true, kind: "admin-live", server: "zz-7787", ticket: "abc.DEF-123" },
+   "mode=admin-live&server&bilet");
+eq(parseZzLocation("?mode=admin-live&server=zz-7787&bilet=a%2Fb%3D"),
+   { ok: true, kind: "admin-live", server: "zz-7787", ticket: "a/b=" },
+   "admin-live: ticket is decoded");
+for (const q of [
+  "?mode=live", "?mode=live&server=", "?mode=live&server=a%2Fb", "?mode=live&server=a%20b",
+  "?mode=live&server=..%2Fx", "?mode=live&server=" + "x".repeat(65),
+  "?mode=live&server=a%3Cb", "?mode=live&server=a%2Bb", "?mode=live&id=42",
+  "?mode=admin-live&server=bad%2Fone&bilet=t", "?mode=admin-live&server=zz-7787",
+  "?mode=admin-live&server=zz-7787&bilet=", "?mode=admin-live&bilet=t",
+  "?mode=admin-live&server=zz-7787&bilet=a%20b",
+  "?mode=admin-live&server=zz-7787&bilet=" + "t".repeat(2049),
+  "?mode=Live&server=zz-7787", "?mode=admin&server=zz-7787",
+]) eq(parseZzLocation(q), { ok: false, reason: "bad-mode" }, `refused: ${q.slice(0, 60)}`);
+eq(parseZzLocation("?mode=live&server=" + "x".repeat(64)),
+   { ok: true, kind: "live", server: "x".repeat(64) }, "64-char server accepted");
+ok(isValidServerId("zz-7787") && !isValidServerId("") && !isValidServerId(null)
+   && !isValidServerId("a b"), "isValidServerId");
+ok(isValidTicket("abc123") && !isValidTicket("") && !isValidTicket(undefined)
+   && !isValidTicket("a b"), "isValidTicket");
+ok(isLiveLocation(parseZzLocation("?mode=live&server=s"))
+   && !isLiveLocation(parseZzLocation("?id=4"))
+   && !isLiveLocation(parseZzLocation("?mode=live")), "isLiveLocation");
+// replay locations keep their exact shape
+eq(parseZzLocation("?mode=replay&id=42"), { ok: true, id: "42" }, "replay shape unchanged");
+eq(TR.invalidAddress, "Geçersiz adres", "invalid address text");
 
 // --- URLs
 eq(metaUrl("42"), "./api/recording/42/meta", "meta url");

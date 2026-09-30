@@ -157,3 +157,47 @@
   }
   #stage #killfeed { width: min(380px, 45%); }
 }
+
+/* ---- Live viewer (?mode=live / ?mode=admin-live) ---- */
+/* The HUD's replay pill and "data age" line are English / replay-oriented; the
+   badge below carries the live state in Turkish instead. */
+.zz-live-root #hud .pill,
+.zz-live-root #hud > div:nth-child(2) { display: none; }
+
+.zz-live-badge {
+  position: absolute; top: 48px; left: var(--sp-2, 8px); z-index: 11;
+  display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: calc(100% - 16px); box-sizing: border-box;
+  padding: 5px 11px; font-size: 12px; line-height: 1.4;
+  color: var(--ink);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-brd); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); pointer-events: none;
+}
+.zz-live-badge b { letter-spacing: 0.04em; }
+.zz-live-badge .pill { margin-left: 0; }
+.zz-live-map { color: var(--ink-mute); }
+.zz-live-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--warn);
+}
+.zz-live-dot.live { background: var(--good); animation: mo-pulse 1.6s ease-in-out infinite; }
+.zz-live-dot.bad { background: var(--bad); }
+.zz-live-end .zz-live-actions { flex-wrap: wrap; }
+.zz-live-end .zz-live-link { text-decoration: none; }
+.zz-live-end .buf-ok, .zz-live-end .buf-ghost { min-height: 40px; }
+
+@media (max-width: 640px), (max-height: 480px) {
+  .zz-topstack > .zz-live-badge {
+    position: static; order: 0; flex: 1 1 100%; max-width: none;
+  }
+  .zz-live-end .buf-card { min-width: 0; padding: 22px 20px 18px; }
+  .zz-live-end .buf-actions { flex-direction: column; align-items: stretch; }
+}
+
+/* The shared overlay container ignores the pointer (the map stays usable) and
+   its children inherit that; the live layers have buttons, so their cards take
+   the pointer back. The "Maç bitti" layer sits above the match-phase card. */
+.zz-live-root .buf-overlay .buf-card { pointer-events: auto; }
+.zz-live-root .zz-live-end { z-index: 13; }

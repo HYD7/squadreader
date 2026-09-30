@@ -32,3 +32,26 @@ respective owners and are included only so the tool interoperates with Squad:
 "Squad" and its assets are trademarks/property of Offworld Industries. This
 project is not affiliated with or endorsed by Offworld Industries. If you are a
 rights holder and want any bundled asset removed, please open an issue.
+
+===============================================================================
+Modifications in this fork (Zero Zone deployment)
+===============================================================================
+
+This fork adds, among other things, an OPTIONAL live-stream feature to the Export
+API (sqreader/livehub.py, sqreader/live_fake.py, scripts/live_bench.py and the
+live/* parts of sqreader/export_api.py, sqreader/httpsrv.py, sqreader/cli.py,
+sqreader/config.py). It is a modification of sqreader and is distributed under the
+same terms as the rest of this repository: AGPL-3.0-or-later with the Commons
+Clause (see LICENSE). It is OFF by default (config export_live_enabled) and, when
+on, is served only on the token-protected Export API path, never on a public route.
+
+AGPL note: the live stream is a network interface. If you run a modified version
+of this program and let others interact with it remotely through a network, the
+AGPL requires you to offer those users the Corresponding Source of the version you
+actually run, including these modifications. Keep the exact deployed commit
+available (see deploy/zerozone/KURULUM-TR.md, "Lisans notu"). This note is not
+legal advice.
+
+The live stream carries raw player data (EOS ids, in-game names, memory
+addresses); see PRIVACY.md. The third-party assets listed above are not covered by
+this licence and are not part of the live stream.
