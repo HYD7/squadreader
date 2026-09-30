@@ -68,6 +68,17 @@ sudo sqreader serve
 On a standard single-instance box **no configuration is needed** — the Squad
 server is auto-detected by its process name.
 
+> **Zero Zone fork.** The modified copy used by the Zero Zone deployment (optional
+> live stream on the Export API, Zero Zone replay viewer build) is published at
+> <https://github.com/HYD7/squadreader> (branch `orkestra/canli-izleme`; upstream:
+> <https://github.com/cagrianilokumus/squadreader>):
+>
+> ```bash
+> git clone https://github.com/HYD7/squadreader
+> ```
+>
+> See `NOTICE` ("Modifications in this fork") and `deploy/zerozone/KURULUM-TR.md`.
+
 ## Configuration
 
 Copy `sqreader.config.example.json` to `sqreader.config.json` (gitignored) and

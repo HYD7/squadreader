@@ -37,6 +37,9 @@ rights holder and want any bundled asset removed, please open an issue.
 Modifications in this fork (Zero Zone deployment)
 ===============================================================================
 
+This fork is published at https://github.com/HYD7/squadreader (branch
+orkestra/canli-izleme; upstream: https://github.com/cagrianilokumus/squadreader).
+
 This fork adds, among other things, an OPTIONAL live-stream feature to the Export
 API (sqreader/livehub.py, sqreader/live_fake.py, scripts/live_bench.py and the
 live/* parts of sqreader/export_api.py, sqreader/httpsrv.py, sqreader/cli.py,

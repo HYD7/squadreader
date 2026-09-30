@@ -76,7 +76,8 @@ kendi SQLite veritabanına istatistik yazar ve Zero Zone'un çektiği salt-okunu
 - Node.js **gerekmez**: replay görüntüleyici Zero Zone'da barındırılır; okuyucu yalnız veri
   sunar (frontend build'i bu makinede yapılmaz).
 - Kurulum sırasında ağ gerekir (git clone + PyPI). Çalışma zamanında gerekmez (bölüm 3.4).
-- Zero Zone çatalının adresi (`<FORK_URL>`) ve kurulacak sabit commit
+- Zero Zone çatalının adresi (`FORK_URL` = `https://github.com/HYD7/squadreader`; dal `orkestra/canli-izleme`,
+  upstream `https://github.com/cagrianilokumus/squadreader`) ve kurulacak sabit commit
   (`<COMMIT_SHA>`, 40 karakter) elinizde olmalı.
 
 ## 3. Kaynaktan kurulum
@@ -85,7 +86,7 @@ kendi SQLite veritabanına istatistik yazar ve Zero Zone'un çektiği salt-okunu
 
 ```bash
 sudo install -d -m 0755 /opt/sqreader
-sudo git clone <FORK_URL> /opt/sqreader/src
+sudo git clone https://github.com/HYD7/squadreader /opt/sqreader/src
 sudo git -C /opt/sqreader/src checkout --detach <COMMIT_SHA>
 sudo git -C /opt/sqreader/src rev-parse HEAD          # <COMMIT_SHA> ile AYNI olmalı
 sudo git -C /opt/sqreader/src status --porcelain      # boş olmalı (yerel değişiklik yok)
@@ -126,7 +127,7 @@ rehberde denenmedi.) İsteğe bağlı ek paketler (`[push]` = `cryptography`, `[
 
 | | Ne zaman | Ne | Gerekli mi |
 |---|---|---|---|
-| Kurulum zamanı | tek sefer | `apt` paketleri, `git clone <FORK_URL>`, `pip install` (PyPI: `zstandard`) | evet, ağ gerekir |
+| Kurulum zamanı | tek sefer | `apt` paketleri, `git clone https://github.com/HYD7/squadreader`, `pip install` (PyPI: `zstandard`) | evet, ağ gerekir |
 | Çalışma zamanı | sürekli | **hiçbiri** | dış ağ **yok** |
 
 Çalışma zamanı güvencesi üç katmandır: (1) config `net_policy: "local-only"` ve boş
@@ -590,7 +591,7 @@ Açmadan önce `PRIVACY.md` "Live stream over the Export API" bölümünü okuyu
 1. Export API açık ve token dosyası en az **32 karakter** (bölüm 5.1). Token yoksa ya da kısaysa canlı yayın da kurulmaz
    (log: "export_live_enabled is set but the Export API is off").
 2. Zero Zone tarafı hazır: `SquadReaderSync` `live` seçenekleri ve **herkese açık yayın için** Zero Zone'da replay anahtarı
-   (`replaySecretFile`; yoksa herkese açık canlı kapalı kalır) ve yayınlanmış çatal adresi (`<FORK_URL>`; AGPL, bölüm 19).
+   (`replaySecretFile`; yoksa herkese açık canlı kapalı kalır) ve yayınlanmış çatal adresi (`https://github.com/HYD7/squadreader`; AGPL, bölüm 19).
    Zero Zone'da yayın gecikmesi varsayılan 600 sn, en az 180 sn'dir (`live.delaySec`).
 3. **Yalnız 7787.** 7788 için açılmaz (bölüm 12).
 4. Ölçüm planı (bölüm 10.5.6): önce yayın kapalıyken taban değeri kaydedin.
@@ -1021,7 +1022,7 @@ Bu yazılım **AGPL-3.0-or-later + Commons Clause** ile lisanslıdır (`LICENSE`
 Sonuçları:
 
 - **Değiştirilmiş kaynak erişilebilir tutulmalıdır.** AGPL'nin ağ üzerinden kullanıcıya hizmet veren değiştirilmiş
-  sürümler için kaynağı sunma yükümlülüğü vardır; bu çatalın (`<FORK_URL>`) ve dağıtılan **tam commit'in**
+  sürümler için kaynağı sunma yükümlülüğü vardır; bu çatalın (`https://github.com/HYD7/squadreader`) ve dağıtılan **tam commit'in**
   herkese erişilebilir kalması, replay görüntüleyicideki "Kaynak kodu" bağlantısının (build zamanında
   `VITE_ZZ_SOURCE_URL`) buna işaret etmesi gerekir. Hukuki değerlendirme için lisansı ve bir uzmanı esas alın; bu rehber
   hukuki görüş değildir.
