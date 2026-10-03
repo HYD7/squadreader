@@ -38,6 +38,11 @@ from .recording_lifecycle import (
     MATCH_TRANSITION_CONFIRM_TICKS,
 )
 
+# The game can expose the previous round's cumulative counters for a few
+# snapshots while a new match is being opened. Do not publish those stale
+# values as the new match's score.
+_STATS_WARMUP_TICKS = 5
+
 # --------------------------------------------------------------------------
 # Schema
 # --------------------------------------------------------------------------
@@ -614,6 +619,7 @@ class StatsStore:
                 "WHERE status='open'")
         self._open_match_id: Optional[str] = None
         self._last_snap: Optional[dict] = None
+        self._stats_warmup_remaining = 0
         # Consecutive ticks carrying a recognised "not playing" state, and the
         # first such snapshot. See record_tick.
         self._inactive_ticks: int = 0
@@ -677,6 +683,7 @@ class StatsStore:
         # the match. On a rolled-back tick the attributes stay put and the next
         # tick simply retries the same open/finalize logic.
         open_id = self._open_match_id
+        is_new_match = open_id != match_id
         # Match ids finalized in THIS transaction — the hook fires only after
         # commit, so a rolled-back tick never signals a false finalize.
         finalized: list[str] = []
@@ -704,11 +711,17 @@ class StatsStore:
                     open_id = None
                 if open_id is None:
                     self._open_match(cur, gs, now)
+                if is_new_match:
+                    self._stats_warmup_remaining = _STATS_WARMUP_TICKS
                 self._update_match_running(cur, match_id, snap, gs, now)
-                idx = self._upsert_players(cur, snap, match_id, now)
+                stats_ready = self._stats_warmup_remaining <= 0
+                idx = self._upsert_players(
+                    cur, snap, match_id, now, stats_ready=stats_ready)
                 self._insert_kill_events(cur, snap, match_id, snap.get("tick"),
                                          idx)
                 self._track_vehicle_sessions(cur, snap, match_id, now)
+                if self._stats_warmup_remaining > 0:
+                    self._stats_warmup_remaining -= 1
                 new_open = match_id
 
         # Commit succeeded — advance in-memory state atomically with the DB.
@@ -831,7 +844,7 @@ class StatsStore:
              match_id))
 
     def _upsert_players(self, cur: sqlite3.Cursor, snap: dict, match_id: str,
-                        now: int) -> _TickIndex:
+                        now: int, *, stats_ready: bool = True) -> _TickIndex:
         name_to_eos: dict[str, str] = {}
         name_to_team: dict[str, int] = {}
         pos_by_eos: dict[str, tuple[float, float]] = {}
@@ -890,7 +903,8 @@ class StatsStore:
                 "defenses": _count(st.get("defenses")) or 0,
                 "vehicle_damage": _wide_score(st.get("vehicleDamage")) or 0.0,
             }
-            self._pm_upsert(cur, match_id, eos, vals, now)
+            self._pm_upsert(cur, match_id, eos, vals, now,
+                            stats_ready=stats_ready)
             cur.execute(
                 "INSERT INTO players (eos_id, last_name, last_clan_tag, "
                 " first_seen_at, last_seen_at) VALUES (?,?,?,?,?) "
@@ -902,14 +916,14 @@ class StatsStore:
         return _TickIndex(name_to_eos, name_to_team, pos_by_eos, pos_by_name)
 
     def _pm_upsert(self, cur: sqlite3.Cursor, match_id: str, eos: str,
-                   vals: dict, now: int) -> None:
+                   vals: dict, now: int, *, stats_ready: bool = True) -> None:
         cols = (["match_id", "eos_id"] + list(_PM_DESC)
                 + list(_PM_COUNTERS_INT) + list(_PM_COUNTERS_REAL)
                 + ["first_seen_at", "last_seen_at", "playtime_sec",
                    "tick_count"])
         params = [match_id, eos] + [vals.get(c) for c in _PM_DESC] \
-            + [vals.get(c) for c in _PM_COUNTERS_INT] \
-            + [vals.get(c) for c in _PM_COUNTERS_REAL] \
+            + [vals.get(c) if stats_ready else 0 for c in _PM_COUNTERS_INT] \
+            + [vals.get(c) if stats_ready else 0 for c in _PM_COUNTERS_REAL] \
             + [now, now, 0, 1]
         set_desc = ", ".join(
             f"{c}=COALESCE(excluded.{c}, player_matches.{c})" for c in _PM_DESC)
