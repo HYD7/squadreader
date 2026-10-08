@@ -1169,6 +1169,44 @@ class DamageTracker:
         self.last_ts.clear()
 
 
+def resolve_attacker(pm: ProcessMemory, paths: "SnapshotPaths | None",
+                     lhb: int, pawn_addr: int,
+                     ctrl_to_name: dict[int, str | None],
+                     ps_to_name: dict[int, str | None]) -> str | None:
+    """
+    Resolve a damage event's attacker to a player name. No guessing: every
+    step is an exact pointer match against this tick's player list.
+
+      1. LastHitBy controller -> the soldier whose APawn.Controller is that
+         controller (attackers on foot).
+      2. LastHitBy controller -> AController.PlayerState -> the player whose
+         SQPlayerState lives at that address. Needed for attackers seated in a
+         vehicle / emplacement: the controller then possesses the seat pawn, so
+         their soldier's Controller slot is empty and step 1 finds nothing.
+         Measured on full-server recordings (2026-10-08): every vehicle-weapon
+         kill (coax, RWS, autocannon, door gun, mortar, TOW) showed "?" for
+         exactly this reason.
+      3. TakeHitInfo.PawnInstigator -> SQPawn.PlayerState -> player. Covers a
+         LastHitBy that is already null/stale (attacker left or respawned
+         before the tick).
+    """
+    if lhb:
+        name = ctrl_to_name.get(lhb)
+        if name:
+            return name
+        off = paths.pc_playerstate_off if paths is not None else None
+        if off is not None and ps_to_name:
+            ps = _safe(lambda: pm.read_u64(lhb + off))
+            if ps and ps in ps_to_name and ps_to_name[ps]:
+                return ps_to_name[ps]
+    if pawn_addr and paths is not None and paths.pawn_playerstate_off is not None and ps_to_name:
+        poff = paths.pawn_playerstate_off
+        ps = _safe(lambda: pm.read_u64(pawn_addr + poff))
+        if ps and ps in ps_to_name and ps_to_name[ps]:
+            return ps_to_name[ps]
+    return None
+
+
 @dataclass
 class SnapshotPaths:
     """Resolved class pointers + per-class field offsets we need."""
@@ -3844,11 +3882,23 @@ def build_snapshot(pm: ProcessMemory, arr: GUObjectArray,
     if damage_tracker is not None:
         # Build name lookup: controller_addr -> player_name
         ctrl_to_name: dict[int, str | None] = {}
+        # SQPlayerState addr -> name (+ eos): the fallback key for attackers whose
+        # soldier has no Controller this tick (seated in a vehicle), see
+        # resolve_attacker().
+        ps_to_name: dict[int, str | None] = {}
+        name_to_eos: dict[str, str | None] = {}
         for p in players:
             sld = p.get("soldier") or {}
             c = sld.get("_controllerAddr") or 0
             if c:
                 ctrl_to_name[c] = p.get("name")
+            a = p.get("_addr")
+            if a and p.get("name"):
+                try:
+                    ps_to_name[int(a, 16)] = p.get("name")
+                except (TypeError, ValueError):
+                    pass
+                name_to_eos[p["name"]] = p.get("eosId")
         for p in players:
             sld = p.get("soldier") or {}
             if sld.get("stale") or not sld.get("classShort"):
@@ -3894,7 +3944,14 @@ def build_snapshot(pm: ProcessMemory, arr: GUObjectArray,
             thi = (read_take_hit_info(pm, alloc, arr, soldier_addr_i)
                    if soldier_addr_i else None)
 
-            attacker_name = ctrl_to_name.get(lhb) if lhb else None
+            pawn_i = 0
+            if thi is not None and thi.get("pawnInstigatorAddr"):
+                try:
+                    pawn_i = int(thi["pawnInstigatorAddr"], 16)
+                except (TypeError, ValueError):
+                    pawn_i = 0
+            attacker_name = resolve_attacker(pm, paths, lhb, pawn_i,
+                                             ctrl_to_name, ps_to_name)
             own_ctrl = sld.get("_controllerAddr") or 0
             ev: dict[str, Any] = {
                 "victim":           p.get("name"),
@@ -3906,6 +3963,8 @@ def build_snapshot(pm: ProcessMemory, arr: GUObjectArray,
                 "attackerCtrlAddr": f"{lhb:#x}" if lhb else None,
                 "selfInflicted":    bool(lhb and lhb == own_ctrl),
             }
+            if attacker_name and name_to_eos.get(attacker_name):
+                ev["attackerEosId"] = name_to_eos[attacker_name]
             if thi is not None:
                 # Splat the enriched fields — frontend killfeed already
                 # consumes them via its 5-tier weapon attribution chain.

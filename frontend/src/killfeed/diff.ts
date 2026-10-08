@@ -30,11 +30,19 @@ import type {
 // SECONDS, not ticks: the reader ranges from 0.5 Hz to the ~4 Hz two-tier rate,
 // and a fixed 20-tick TTL that was ~40 s at 0.5 Hz collapsed to ~5 s at 4 Hz —
 // the incap aged out long before the bleed-out death, so nearly every kill
-// showed a "?" attacker (both live and replay). 120 s covers real Squad
-// bleed-outs (measured against a full recorded match: ~83% -> ~90% attributed)
-// without the mis-attribution a longer window brings — at 180 s a couple of
-// world-cause deaths (fall/drown, no attacker) matched a stale incap instead.
-const ATTACK_ATTR_TTL_SEC = 120;
+// showed a "?" attacker (both live and replay). 120 s covered most bleed-outs,
+// but a downed player can wait for a medic for minutes before giving up or
+// bleeding out: on three full-server recordings (2026-10-08) about a quarter of
+// the "?" rows had the wounding event 2-15 min earlier (median ~4-5 min). The
+// window is therefore 6 min. The mis-attribution a long window used to bring
+// (a REVIVED player later dying of a fall/drown matched their stale incap) is
+// closed separately: an incap whose victim is seen back on their feet is
+// dropped from the buffer (REVIVE_GRACE_SEC below).
+const ATTACK_ATTR_TTL_SEC = 360;
+// An incap (wounded, not killed) is discarded once its victim has been
+// observed healthy/bleeding again for this long: they were revived, so that
+// incap can no longer be the cause of their next death.
+const REVIVE_GRACE_SEC = 5;
 
 // A wounded/killed damageEvent held so the death-counter increment it
 // leads to can be attributed to the exact attacker, not a guessed pairing.
@@ -100,6 +108,10 @@ export function isSoldierClass(cls: string | null | undefined): boolean {
 export function deathCauseFromDamageType(dt: string | null | undefined):
   { label: string; title: string } | null {
   if (!dt) return null;
+  // Bare UE "DamageType" (no causer, no instigator) is how a downed player's
+  // give-up / bleed-out death arrives from the reader; label it as such.
+  if (/^DamageType$/.test(dt))
+    return { label: "Bled out", title: "Bled out (no medic in time)" };
   if (/_fall(?:\b|$|_)/i.test(dt) || /fallingdamage/i.test(dt))
     return { label: "Fall", title: "Fall damage" };
   if (/underwater|drown/i.test(dt))
@@ -117,6 +129,7 @@ export function deathCauseFromDamageType(dt: string | null | undefined):
 
 export function deathCausePhrase(dt: string | null | undefined): string {
   if (!dt) return "died";
+  if (/^DamageType$/.test(dt))                    return "has bled out";
   if (/_fall(?:\b|$|_)|fallingdamage/i.test(dt)) return "fell to death";
   if (/underwater|drown/i.test(dt))               return "drowned";
   if (/helicopter.*collision|helicrash/i.test(dt))return "died in a helicopter crash";
@@ -438,6 +451,14 @@ export function diffSnapshot(
     if (b.used) continue;
     if (gameTime != null && b.bufAt != null
         && gameTime - b.bufAt > ATTACK_ATTR_TTL_SEC) continue;
+    // Revived: the incap's victim is back on their feet, so this incap can no
+    // longer lead to their death — keeping it would credit the old wounder for
+    // whatever kills them next (the stale-incap mis-attribution).
+    if (b.ev.wounded && !b.ev.killed && gameTime != null && b.bufAt != null
+        && gameTime - b.bufAt > REVIVE_GRACE_SEC) {
+      const ls = b.ev.victim ? playerByName.get(b.ev.victim)?.soldier?.lifeState : null;
+      if (ls === "healthy" || ls === "bleeding") continue;
+    }
     keep.push(b);
   }
   // Hard cap so a stretch with no gameState can't grow the buffer unbounded.

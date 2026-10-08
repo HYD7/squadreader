@@ -7,6 +7,20 @@ follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Kill feed showed "?" for most vehicle-weapon and emplacement kills (coax, RWS,
+  autocannon, door gun, mortar, TOW): the reader resolved `LastHitBy` only
+  through the attacker's *soldier* controller, which is empty while the player
+  possesses a vehicle seat. `resolve_attacker()` now also matches the
+  controller's `PlayerState` and, failing that, `TakeHitInfo.PawnInstigator`
+  against the tick's player list (exact pointer matches, no guessing), and
+  emits `attackerEosId` when known. Measured on full-server recordings
+  (2026-10-08): roughly half of the unattributed deaths.
+- Kill feed showed "?" for downed players who waited minutes for a medic and
+  then gave up: the attribution window was 120 s. It is now 6 min; to keep the
+  long window honest an incap is dropped once its victim is seen back on their
+  feet (revived), so a later unrelated death is not credited to the old
+  wounder. A bare `DamageType` death with no attacker is labelled "bled out"
+  instead of "?".
 - On a two-tier recording the viewer discarded every 4 Hz position update. The
   compact format wraps those lines so they are never diffed, and the browser's
   decoder had no branch for them at all, so each one came back as a copy of the

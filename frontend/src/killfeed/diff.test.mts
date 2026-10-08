@@ -1,6 +1,6 @@
 // Standalone unit test for the event-first kill-feed diff. Bundled with
 // esbuild and run under node — no test framework needed.
-import { createDiffState, diffSnapshot } from "./diff.ts";
+import { createDiffState, deathCauseFromDamageType, deathCausePhrase, diffSnapshot } from "./diff.ts";
 
 let passed = 0, failed = 0;
 function ok(cond: any, msg: string) {
@@ -246,6 +246,70 @@ function evt(o: any): any {
   const r = diffSnapshot(s, at([P("A","a",1,1,0), P("B","b",2,0,1)], [], 131));   // B bleeds out @131 (31s<45s)
   eq(r.newEntries.length, 1, "bleed-out death emitted after many quiet ticks");
   eq(r.newEntries[0].killer, "A", "attacker survives the game-time TTL at 4 Hz");
+}
+
+// 16. Long bleed-out: a downed player who waits minutes for a medic and then gives
+//     up is still credited to the wounder (window is 6 min, not 2).
+{
+  const s = createDiffState();
+  const at = (players: any[], events: any[], es: number): any =>
+    ({ tick: 1, players, damageEvents: events, gameState: { elapsedSec: es }, vehicles: [] });
+  const down = (name: string, eos: string, team: number, deaths: number) =>
+    ({ ...P(name, eos, team, 0, deaths), soldier: { lifeState: "incapacitated" } });
+  diffSnapshot(s, at([P("A","a",1,0,0), P("B","b",2,0,0)], [], 100));
+  diffSnapshot(s, at([P("A","a",1,0,0), down("B","b",2,0)],
+    [evt({ wounded:true, attacker:"A", victim:"B", victimEosId:"b", victimTeam:2 })], 100));
+  for (let i = 1; i <= 29; i++) diffSnapshot(s, at([P("A","a",1,0,0), down("B","b",2,0)], [], 100 + i * 10));
+  // B gives up at +300 s: the reader reports a bare "DamageType" death with no attacker.
+  const r = diffSnapshot(s, at([P("A","a",1,1,0), { ...P("B","b",2,0,1), soldier: null }],
+    [evt({ killed:true, attacker:null, victim:"B", victimEosId:"b", victimTeam:2, damageType:"DamageType" })], 400));
+  eq(r.newEntries.length, 1, "give-up death emitted");
+  eq(r.newEntries[0].killer, "A", "credited to the wounder 5 min earlier");
+}
+
+// 17. Revived: an incap whose victim gets back up must NOT be credited for the
+//     victim's later, unrelated death (the stale-incap mis-attribution).
+{
+  const s = createDiffState();
+  const at = (players: any[], events: any[], es: number): any =>
+    ({ tick: 1, players, damageEvents: events, gameState: { elapsedSec: es }, vehicles: [] });
+  const withLife = (name: string, eos: string, team: number, deaths: number, lifeState: string) =>
+    ({ ...P(name, eos, team, 0, deaths), soldier: { lifeState } });
+  diffSnapshot(s, at([P("A","a",1,0,0), P("B","b",2,0,0)], [], 100));
+  diffSnapshot(s, at([P("A","a",1,0,0), withLife("B","b",2,0,"incapacitated")],
+    [evt({ wounded:true, attacker:"A", victim:"B", victimEosId:"b", victimTeam:2 })], 100));
+  diffSnapshot(s, at([P("A","a",1,0,0), withLife("B","b",2,0,"incapacitated")], [], 103));
+  // Medic revives B: healthy for 10 s (> REVIVE_GRACE_SEC) ...
+  diffSnapshot(s, at([P("A","a",1,0,0), withLife("B","b",2,0,"healthy")], [], 110));
+  diffSnapshot(s, at([P("A","a",1,0,0), withLife("B","b",2,0,"healthy")], [], 120));
+  // ... then B falls to death with no attacker.
+  const r = diffSnapshot(s, at([P("A","a",1,0,0), withLife("B","b",2,1,"healthy")],
+    [evt({ killed:true, attacker:null, victim:"B", victimEosId:"b", victimTeam:2, damageType:"SQDamageType_Fall" })], 130));
+  eq(r.newEntries.length, 1, "fall death emitted");
+  eq(r.newEntries[0].killer, null, "NOT credited to the old wounder after a revive");
+  eq(r.newEntries[0].damageType, "SQDamageType_Fall", "world cause kept");
+}
+
+// 18. Still-downed victim keeps the incap (no lifeState / incapacitated are not "revived").
+{
+  const s = createDiffState();
+  const at = (players: any[], events: any[], es: number): any =>
+    ({ tick: 1, players, damageEvents: events, gameState: { elapsedSec: es }, vehicles: [] });
+  diffSnapshot(s, at([P("A","a",1,0,0), P("B","b",2,0,0)], [], 100));
+  diffSnapshot(s, at([P("A","a",1,0,0), P("B","b",2,0,0)],          // soldier: null (no lifeState)
+    [evt({ wounded:true, attacker:"A", victim:"B", victimEosId:"b", victimTeam:2 })], 100));
+  diffSnapshot(s, at([P("A","a",1,0,0), P("B","b",2,0,0)], [], 120));
+  const r = diffSnapshot(s, at([P("A","a",1,1,0), P("B","b",2,0,1)], [], 140));
+  eq(r.newEntries.length, 1, "death emitted");
+  eq(r.newEntries[0].killer, "A", "incap kept when lifeState is unknown");
+}
+
+// 19. Bare "DamageType" with no attacker reads as a bleed-out, not "?".
+{
+  eq(deathCausePhrase("DamageType"), "has bled out", "give-up phrase");
+  eq(deathCauseFromDamageType("DamageType")?.label, "Bled out", "give-up label");
+  eq(deathCauseFromDamageType("BP_SmallArms_DamageType_C"), null, "real damage types unaffected");
+  eq(deathCausePhrase("BP_Kinetic_DamageType_C"), "died", "real damage types unaffected (phrase)");
 }
 
 console.log(`\nkillfeed diff tests: ${passed} passed, ${failed} failed`);
