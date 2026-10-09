@@ -295,3 +295,57 @@ def test_weapon_meta_counts_kills_and_reports_null_range_when_unpositioned(tmp_p
     assert rows["BP_M4A1"]["max_distance_m"] == pytest.approx(200.0)
     assert rows["BP_Knife"]["kills"] == 1
     assert rows["BP_Knife"]["avg_distance_m"] is None   # null, not 0
+
+
+# --------------------------------------------------------------------------
+# kill-event `source` label
+# --------------------------------------------------------------------------
+
+_A = "11111111-1111-1111-1111-111111111111"
+_B = "22222222-2222-2222-2222-222222222222"
+
+
+def _two_players():
+    return [_player(_A, "Alice", 1, x=0.0, y=0.0),
+            _player(_B, "Bob", 2, x=100.0, y=0.0)]
+
+
+def test_merged_log_memory_event_is_one_row_with_its_source(tmp_path):
+    db = tmp_path / "s.db"
+    store = StatsStore(db, server_id="t")
+    ev = dict(_kill("Alice", "Bob"), source="log+memory", damage=87.5,
+              hitDistance=1234.0, headshot=True)
+    store.record_tick(_snap(_two_players(), [ev]))
+    store.close()
+
+    rows = _rows(db, "SELECT * FROM kill_events")
+    assert len(rows) == 1
+    assert rows[0]["source"] == "log+memory"
+    assert rows[0]["hit_distance"] == pytest.approx(1234.0)
+    assert rows[0]["headshot"] == 1
+
+
+def test_merged_event_repeated_across_snapshots_dedupes(tmp_path):
+    db = tmp_path / "s.db"
+    store = StatsStore(db, server_id="t")
+    ev = dict(_kill("Alice", "Bob"), source="log+memory", damage=87.5,
+              hitDistance=1234.0, headshot=True)
+    snap = _snap(_two_players(), [ev])
+    store.record_tick(snap)
+    store.record_tick(dict(snap, tick=2))
+    store.close()
+
+    assert _rows(db, "SELECT COUNT(*) c FROM kill_events")[0]["c"] == 1
+
+
+def test_source_falls_back_to_damage_presence_for_legacy_events(tmp_path):
+    db = tmp_path / "s.db"
+    store = StatsStore(db, server_id="t")
+    with_damage = dict(_kill("Alice", "Bob", ts=1000.0), damage=50.0)
+    without = _kill("Bob", "Alice", ts=1001.0)
+    store.record_tick(_snap(_two_players(), [with_damage, without]))
+    store.close()
+
+    by_victim = {r["victim_name"]: r["source"]
+                 for r in _rows(db, "SELECT victim_name, source FROM kill_events")}
+    assert by_victim == {"Bob": "memory", "Alice": "log"}

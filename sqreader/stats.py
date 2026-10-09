@@ -966,7 +966,8 @@ class StatsStore:
             self_infl = 1 if ev.get("selfInflicted") else 0
             tk = 1 if (not self_infl and a_team is not None
                        and v_team is not None and a_team == v_team) else 0
-            source = "memory" if ev.get("damage") is not None else "log"
+            source = ev.get("source") or (
+                "memory" if ev.get("damage") is not None else "log")
 
             # EOS id first (a stable key), then name. A wounded victim is still
             # on the map, so victim positions land often; an instant kill whose

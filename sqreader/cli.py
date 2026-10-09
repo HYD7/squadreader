@@ -766,6 +766,28 @@ def cmd_serve(args: argparse.Namespace) -> int:
                                    sleep=lambda d: time.sleep(d))
 
 
+def _merge_damage_events(snap: dict, players: list, log_tailer: Any,
+                         merger: Any, tick: int, state: dict) -> None:
+    """Replace snap["damageEvents"] with log events enriched by memory events.
+
+    `state` holds the one-shot health flag so the fallback warning is printed
+    once per transition, not every tick."""
+    from .squad.logtail import resolve_event_names
+    healthy = bool(log_tailer.healthy())
+    was = state.get("healthy", True)
+    if was and not healthy:
+        print("  Squad logu okunamıyor, kill feed bellek olaylarına düştü: "
+              f"{getattr(log_tailer, 'path', '?')}", file=sys.stderr)
+    elif healthy and not was:
+        print("  Squad logu tekrar okunuyor, kill feed log ile birleşiyor: "
+              f"{getattr(log_tailer, 'path', '?')}", file=sys.stderr)
+    state["healthy"] = healthy
+    snap["damageEvents"] = merger.merge(
+        resolve_event_names(log_tailer.drain(), players),
+        snap.get("damageEvents") or [], players,
+        tick=tick, now=time.monotonic(), log_healthy=healthy)
+
+
 def _live_publish(hub: Any, line: str, kind: str, snap: dict | None,
                   tick: int) -> None:
     """Hand one ready-made tick line to the live hub (fork feature). O(1) on the
@@ -832,6 +854,8 @@ def _serve_once(args: argparse.Namespace) -> int:
     # thread — if the log is missing/unreadable or the thread dies, the
     # reader keeps running and the feed just falls back to the memory events.
     log_tailer = None
+    killmerger = None
+    killmerge_state: dict = {}
     # The log is resolved from the DISCOVERED process (/proc/<pid>/root/...), so
     # it is the right game's log by construction. Ambiguity is an error, not a
     # guess, and is raised here rather than swallowed by the tailer's guard.
@@ -853,6 +877,8 @@ def _serve_once(args: argparse.Namespace) -> int:
         if squad_log:
             log_tailer = LogTailer(squad_log)
             log_tailer.start()
+            from .squad.killmerge import DamageEventMerger
+            killmerger = DamageEventMerger()
             print(f"  kill-feed from log -> {squad_log}", file=sys.stderr)
         else:
             # Loudly, because this one degrades silently: without the log
@@ -863,10 +889,14 @@ def _serve_once(args: argparse.Namespace) -> int:
                   "Konteynerde log yolu farklıysa config'te "
                   "`log_path_in_container` (ya da `log_path`) ayarlayın; "
                   "reader'ın /proc/<pid>/root altını okuyabilmesi için "
-                  "root yetkisi gerekir.", file=sys.stderr)
+                  "root yetkisi gerekir. Pterodactyl'de host yolunu "
+                  "`log_path` olarak verin: /var/lib/pterodactyl/volumes/"
+                  "<sunucu-uuid>/SquadGame/Saved/Logs/SquadGame.log",
+                  file=sys.stderr)
     except Exception as e:
         print(f"  log tailer disabled: {e}", file=sys.stderr)
         log_tailer = None
+        killmerger = None
 
     out_f = None
     if args.out:
@@ -1467,9 +1497,8 @@ def _serve_once(args: argparse.Namespace) -> int:
                 print(f"[tick {tick}] synth-match error: {_sy_e!r}",
                       file=sys.stderr)
         if log_tailer is not None:
-            from .squad.logtail import resolve_event_names
-            snap["damageEvents"] = resolve_event_names(
-                log_tailer.drain(), snap.get("players") or [])
+            _merge_damage_events(snap, snap.get("players") or [], log_tailer,
+                                 killmerger, tick, killmerge_state)
         line = json.dumps(snap, ensure_ascii=False) + "\n"
         beat.mark()
         if live_hub is not None:
