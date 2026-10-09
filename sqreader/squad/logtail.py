@@ -41,6 +41,8 @@ _ACTUAL_RE = re.compile(
 )
 _WOUND_RE = re.compile(
     r"Wound\(\): Player:\s?(?P<victim>.+?) KillingDamage=[-\d.]+ from (?P<from>\S+)"
+    r"(?:\s*\(Online IDs:\s*EOS:\s*(?P<from_eos>\w+))?"
+    r"(?:.*?caused by (?P<causer>\S+))?"
 )
 _DIE_RE = re.compile(
     r"Die\(\): Player:\s?(?P<victim>.+?) KillingDamage=[-\d.]+ from (?P<from>\S+)"
@@ -94,6 +96,10 @@ def resolve_event_names(events: list[dict], players: list[dict]) -> list[dict]:
         e["victim"] = resolve(e.get("victim"))
         e["attacker"] = resolve(e.get("attacker"))
         keos = e.pop("killerEos", None)
+        if not e.get("attacker") and not keos:
+            # Wound/Die with a nullptr ActualDamage: only the event's own
+            # controller EOS identifies the attacker.
+            keos = e.get("attackerEosId")
         if not e.get("attacker") and keos:
             veos = e.get("victimEosId") or name_to_eos.get(e.get("victim"))
             if veos and keos == veos:
@@ -177,8 +183,14 @@ class DamageLogParser:
     """Pure correlation state machine — feed it lines, drain events. No I/O,
     so it is directly unit-testable."""
 
-    def __init__(self, *, ttl_sec: float = 180.0, max_buffer: int = 512):
+    # Wound -> death (bleed-out / give-up) routinely takes 4-5 min, >10 min
+    # happens, so the wound record must outlive that. The last-hit record is
+    # only trusted while fresh (it is consulted for instant kills).
+    HIT_FRESH_SEC = 180.0
+
+    def __init__(self, *, ttl_sec: float = 1200.0, max_buffer: int = 2048):
         self.ttl = ttl_sec
+        self._last_gc: float = 0.0
         # victim -> (attacker, eos, weapon, ts) from the most recent hit
         self._pending: dict[str, tuple] = {}
         # victim -> (attacker, eos, weapon, ts) recorded at incap, awaiting death
@@ -187,6 +199,7 @@ class DamageLogParser:
         self._last_ts: float = 0.0
 
     def _gc(self, now: float) -> None:
+        self._last_gc = now
         for d in (self._pending, self._wounded_by):
             stale = [k for k, v in d.items() if now - v[3] > self.ttl]
             for k in stale:
@@ -202,6 +215,8 @@ class DamageLogParser:
             attacker = m.group("attacker").strip()
             self._pending[victim] = (
                 attacker, m.group("eos"), _norm_weapon(m.group("weapon")), ts)
+            if ts - self._last_gc > 60.0:   # bound memory on long kill-less spells
+                self._gc(ts)
             return
 
         m = _REVIVE_RE.search(line)
@@ -217,13 +232,24 @@ class DamageLogParser:
         m = _WOUND_RE.search(line)
         if m:
             victim = m.group("victim").strip()
-            src = self._pending.get(victim)
+            src = self._fresh_hit(victim, ts)
             attacker = src[0] if src else None
             eos = src[1] if src else None
             weapon = src[2] if src else None
+            # The Wound line carries the downing controller's own EOS and the
+            # weapon even when the preceding ActualDamage was `from nullptr`
+            # (vehicle weapon / collision). It is authoritative for the EOS.
+            w_eos = self._valid_eos(m.group("from"), m.group("from_eos"))
+            if w_eos and not eos:
+                eos = w_eos
+            if not weapon:
+                weapon = self._line_weapon(m.group("causer"))
             self._wounded_by[victim] = (attacker, eos, weapon, ts)
             self._emit(victim, attacker, eos, weapon, ts,
-                       wounded=True, killed=False)
+                       wounded=True, killed=False,
+                       killer_eos=eos if attacker is None else None)
+            if ts - self._last_gc > 60.0:
+                self._gc(ts)
             return
 
         m = _DIE_RE.search(line)
@@ -233,13 +259,17 @@ class DamageLogParser:
             causer = m.group("causer")
             if frm and frm != "nullptr":
                 # instant kill — attacker is the last hit's source
-                src = self._pending.get(victim)
+                src = self._fresh_hit(victim, ts)
             else:
                 # bleed-out / give-up — attacker is whoever downed them
                 src = self._wounded_by.get(victim)
             attacker = src[0] if src else None
             eos = src[1] if src else None
             weapon = src[2] if src else None
+            die_eos = m.group("from_eos")
+            if not weapon:
+                weapon = self._line_weapon(causer)
+            die_eos = m.group("from_eos")
             # The Die line names the CREDITED killer by controller EOS (the same
             # EOS the game scores the kill to). Keep it: when the name-cache has
             # expired — a death long after the wound, e.g. round-end deaths of
@@ -247,8 +277,9 @@ class DamageLogParser:
             # the ONLY thing that still identifies the killer. resolve_event_names
             # turns it into a name against the live roster (or a self death if it
             # is the victim's own EOS). This is what kills the bare "?" rows.
-            die_eos = m.group("from_eos")
             killer_eos = die_eos if die_eos and die_eos != "INVALID" else None
+            if killer_eos is None and attacker is None and eos:
+                killer_eos = eos   # EOS remembered from the Wound line
             # No damage record attributes this death — classify it from the
             # log's own "from" / "caused by" instead of showing a bare "?":
             #   caused by <world class>    -> a world cause (fall, drown,
@@ -274,6 +305,26 @@ class DamageLogParser:
             self._wounded_by.pop(victim, None)
             self._pending.pop(victim, None)
             self._gc(ts)
+
+    @staticmethod
+    def _valid_eos(frm, eos):
+        if not frm or frm == "nullptr" or not eos or eos == "INVALID":
+            return None
+        return eos
+
+    @staticmethod
+    def _line_weapon(causer):
+        """`caused by` of a Wound/Die line as a weapon class. Soldier pawns
+        (bleed-out, melee/give-up) are not weapons."""
+        if not causer or causer == "nullptr" or causer.startswith("BP_Soldier"):
+            return None
+        return _norm_weapon(causer)
+
+    def _fresh_hit(self, victim, ts):
+        src = self._pending.get(victim)
+        if src and ts - src[3] > self.HIT_FRESH_SEC:
+            return None
+        return src
 
     def _emit(self, victim, attacker, eos, weapon, ts, *, wounded, killed,
               self_inflicted=None, damage_type=None, killer_eos=None):

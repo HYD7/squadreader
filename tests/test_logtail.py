@@ -321,3 +321,60 @@ def test_emit_has_source_log():
     p.feed(wound("Vic"))
     evs = p.drain()
     assert evs and all(e["source"] == "log" for e in evs)
+
+
+def _wound_full(victim, eos, caused, ctrl="BP_PlayerController_C_9"):
+    return (f"{TS}LogSquadTrace: [DedicatedServer]Wound(): Player: {victim} "
+            f"KillingDamage=50.0 from {ctrl} (Online IDs: EOS: {eos} steam: 1 | "
+            f"Controller ID: {ctrl}) caused by {caused}")
+
+
+def test_wound_after_nullptr_actualdamage_uses_wound_line_eos_and_weapon():
+    # Vehicle weapon: ActualDamage was `from nullptr`, so nothing is remembered.
+    # The Wound line's own controller EOS + `caused by` must still attribute it.
+    p = DamageLogParser()
+    p.feed(f"{TS}LogSquad: Player: Vic ActualDamage=80.0 from nullptr "
+           f"(Online IDs: INVALID | Player Controller ID: None)caused by BP_BTR82A_RUS_Desert_C_5")
+    p.feed(_wound_full("Vic", "0002gun", "BP_BTR82A_RUS_Desert_C_123"))
+    evs = p.drain()
+    w = only(evs, wounded=True)[0]
+    assert w["attackerEosId"] == "0002gun"
+    assert w["causerWeapon"] == "BP_BTR82A_RUS_Desert_C"
+    resolve_event_names(evs, [{"name": "Gunner", "eosId": "0002gun"}])
+    assert w["attacker"] == "Gunner"
+    # EOS not on roster: name stays None but EOS is kept
+    p.feed(_wound_full("Vic2", "0002off", "BP_TAPV_C_1"))
+    w2 = only(p.drain(), wounded=True)[0]
+    resolve_event_names([w2], [])
+    assert w2["attacker"] is None and w2["attackerEosId"] == "0002off"
+
+
+def test_bleed_out_after_ten_minutes_still_attributed():
+    p = DamageLogParser()
+    p.feed(_wound_full("Vic", "0002gun", "BP_TAPV_C_1"))
+    late = die("Vic", caused="nullptr").replace("18.31.24", "18.43.24")
+    p.feed(late)
+    evs = p.drain()
+    k = only(evs, killed=True)[0]
+    assert k["attackerEosId"] == "0002gun"
+    resolve_event_names(evs, [{"name": "Gunner", "eosId": "0002gun"}])
+    assert k["attacker"] == "Gunner"
+    assert k["causerWeapon"] == "BP_TAPV_C"
+
+
+def test_wound_record_expires_after_ttl():
+    p = DamageLogParser()
+    p.feed(_wound_full("Vic", "0002gun", "BP_TAPV_C_1"))
+    p.feed(die("Other", caused="nullptr").replace("18.31.24", "19.00.00"))  # gc
+    p.feed(die("Vic", caused="nullptr").replace("18.31.24", "19.01.00"))
+    k = only(p.drain(), killed=True)
+    assert k[-1]["victim"] == "Vic"
+    assert k[-1]["attacker"] is None and k[-1]["attackerEosId"] is None
+
+
+def test_unrecorded_nullptr_die_keeps_caused_by_weapon():
+    p = DamageLogParser()
+    p.feed(die("Vic", caused="BP_TAPV_C_77"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] is None
+    assert k["causerWeapon"] == "BP_TAPV_C"
