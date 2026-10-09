@@ -308,15 +308,40 @@ for (const bad of ["secret-ticket-123", "v1.!!!.sig", mkTicket("not json"), mkTi
     h.w.send({ origin: "https://zz.test", source: {}, data: { type: "zz-ticket", bilet: fresh } });
     eq(h.streams.length, 1, "foreign origin / non-parent source ignored");
     h.w.send({ origin: "https://zz.test", source: h.w.parent, data: { type: "zz-ticket", bilet: fresh } });
-    eq(h.streams.length, 2, "reconnected after zz-ticket");
-    ok(h.streams[1]!.url.endsWith(`bilet=${encodeURIComponent(fresh)}`), "new ticket in the url");
-    ok(h.streams[0]!.closed, "old stream closed");
+    eq(h.streams.length, 1, "proactive refresh: no new stream");
+    ok(!h.streams[0]!.closed, "proactive refresh: open stream not closed");
+    eq(conns(h.events), ["connecting", "live"], "proactive refresh: no conn change");
+    // next drop reconnects with the stored ticket
+    h.streams[0]!.fail(true);
+    await h.timers.advance(2_000);
+    eq(h.streams.length, 2, "reconnected after drop");
+    ok(h.streams[1]!.url.endsWith(`bilet=${encodeURIComponent(fresh)}`), "stored ticket used on reconnect");
     h.streams[1]!.open();
-    eq(conns(h.events), ["connecting", "live", "connecting", "live"], "connecting -> live again");
     await h.timers.advance(60_000);
     eq(h.w.posted.length, 1, "no reply timeout side effects after success");
     h.src.stop();
     eq(h.w.handlers.length, 0, "listener removed on stop");
+  }
+  // stored ticket: next proactive timer follows the new expiry
+  {
+    const h = setupRefresh(true);
+    h.src.start();
+    h.streams[0]!.open();
+    for (let i = 0; i < 17; i++) { await h.timers.advance(30_000); h.streams[0]!.emit("hb", ""); }
+    h.setClock(NOW_MS + 540_000);
+    await h.timers.advance(30_000);
+    eq(h.w.posted.length, 1, "first proactive request");
+    h.w.send({ origin: "https://zz.test", source: h.w.parent, data: { type: "zz-ticket", bilet: fresh } });
+    h.streams[0]!.emit("hb", "");
+    h.setClock(NOW_MS + 541_000);
+    await h.timers.advance(30_000);
+    h.streams[0]!.emit("hb", "");
+    eq(h.w.posted.length, 1, "no new request before the stored ticket's expiry-60s");
+    h.setClock(NOW_MS + 1_140_000);
+    for (let i = 0; i < 20; i++) { await h.timers.advance(30_000); h.streams[0]!.emit("hb", ""); }
+    ok(h.w.posted.length >= 2, "timer re-armed for the stored ticket");
+    eq(h.streams.length, 1, "still the same stream");
+    h.src.stop();
   }
   // no reply in 15 s after a failure on an expired ticket -> ticket_expired; one pending request
   {

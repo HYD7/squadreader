@@ -130,6 +130,9 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
   let everOpened = false;
   let conn: ConnState | null = null;
   let ticket = opts.ticket;
+  /** Fresh ticket from a proactive refresh, held for the next reconnect: the
+   *  server checks the ticket only on connect, so the open stream is kept. */
+  let pendingTicket: string | null = null;
   let refreshTimer: unknown = null;
   let replyTimer: unknown = null;
   let pending = false;
@@ -155,13 +158,27 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     if (m.type !== "zz-ticket" || typeof m.bilet !== "string"
         || m.bilet.length === 0 || m.bilet.length > 2048
         || isTicketExpired(m.bilet, now())) return;
+    const reactive = pendingReactive;
     endPending();
+    if (!running) { ticket = m.bilet; failures = 0; return; }
+    if (!reactive) {
+      // Proactive: keep the open stream, use the new ticket on the next connect.
+      pendingTicket = m.bilet;
+      scheduleRefresh();
+      return;
+    }
     ticket = m.bilet;
+    pendingTicket = null;
     failures = 0;
-    if (!running) return;
     clearTimers();
     setConn("connecting");
     open();                             // gen++ inside: the old stream is dead
+  }
+  function promoteTicket() {
+    if (pendingTicket !== null && !isTicketExpired(pendingTicket, now())) {
+      ticket = pendingTicket;
+    }
+    pendingTicket = null;
   }
   function endPending() {
     pending = false; pendingReactive = false;
@@ -191,7 +208,7 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
   function scheduleRefresh() {
     if (refreshTimer !== null) { timers.clearTimeout(refreshTimer); refreshTimer = null; }
     if (!canRefresh()) return;
-    const exp = ticketExpiryMs(ticket);
+    const exp = ticketExpiryMs(pendingTicket ?? ticket);
     if (exp === null) return;
     const wait = Math.max(0, exp - TICKET_REFRESH_LEAD_MS - now());
     refreshTimer = timers.setTimeout(() => {
@@ -239,6 +256,7 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     closeStream();
     if (watchdog !== null) { timers.clearTimeout(watchdog); watchdog = null; }
     failures++;
+    promoteTicket();
     if (failures >= SSE_EXPIRED_CHECK_AFTER && isTicketExpired(ticket, now())) {
       // The server answers an expired ticket with 403 and EventSource closes
       // for good; retrying with the same ticket is pointless. An embedded
@@ -266,6 +284,7 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     if (!running) return;
     const myGen = ++gen;
     closeStream();
+    promoteTicket();
     let stream: EventSourceLike;
     try {
       stream = factory(adminStreamUrl(opts.server, ticket));
