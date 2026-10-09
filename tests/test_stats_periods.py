@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from conftest import warm_up
 
 from sqreader.stats import StatsStore, map_heatmap, leaderboard, period_cutoff
 
@@ -98,10 +99,14 @@ def test_leaderboard_period_excludes_older_matches(tmp_path):
     db = tmp_path / "s.db"
     store = StatsStore(db, server_id="t")
     # An old match (June) and a recent one (today).
-    store.record_tick(_snap("old", "2026-06-01T10:00:00+00:00",
-                            [_p("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Alice", 1, kills=50)]))
-    store.record_tick(_snap("new", "2026-07-15T10:00:00+00:00",
-                            [_p("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Bob", 2, kills=5)]))
+    old = _snap("old", "2026-06-01T10:00:00+00:00",
+                [_p("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Alice", 1, kills=50)])
+    new = _snap("new", "2026-07-15T10:00:00+00:00",
+                [_p("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Bob", 2, kills=5)])
+    warm_up(store, old)   # counters are ignored for the first ticks of a match
+    store.record_tick(old)
+    warm_up(store, new)
+    store.record_tick(new)
     store.finalize_open_match(reason="test", confirmed=True)  # reads serve only finished matches
     store.close()
 

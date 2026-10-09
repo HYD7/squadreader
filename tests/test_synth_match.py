@@ -237,7 +237,7 @@ def test_unlicensed_server_produces_a_real_match_row(tmp_path):
     like — InProgress with an empty matchId — and confirm that without the
     resolver nothing is written at all, and with it a normal match row appears.
     """
-    from sqreader.stats import StatsStore
+    from sqreader.stats import _STATS_WARMUP_TICKS, StatsStore
 
     # A real 32-hex EOS ProductUserId; `_valid_eos` rejects shorter stand-ins.
     players = [{"eosId": "0002a1b2c3d4e5f60718293a4b5c6d7e", "name": "A",
@@ -259,7 +259,7 @@ def test_unlicensed_server_produces_a_real_match_row(tmp_path):
     # --- with the resolver in front -----------------------------------------
     res = make(tmp_path)
     after = StatsStore(tmp_path / "after.db", server_id="gm-1")
-    for i in range(6):
+    for i in range(6 + _STATS_WARMUP_TICKS):   # counters count only after the warm-up
         f = frame(i)
         res.apply(f)
         after.record_tick(f)

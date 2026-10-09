@@ -6,6 +6,7 @@ timestamps are match world-time and are never compared with log timestamps:
 matching uses only the victim key, event kind and a short tick/time window.
 No I/O; the clock is supplied by the caller."""
 import copy
+import math
 from typing import Optional
 
 _COPY_FIELDS = ("victimEosId", "victimTeam", "victimSoldier", "victimPos",
@@ -24,6 +25,62 @@ def _norm(name) -> str:
     return str(name).strip().lower() if name else ""
 
 
+def _xyz(pos):
+    """(x, y, z|None) from a {"x","y","z"} dict of finite numbers, else None."""
+    if not isinstance(pos, dict):
+        return None
+    try:
+        x, y = float(pos["x"]), float(pos["y"])
+        z = float(pos["z"]) if pos.get("z") is not None else None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y)) or (
+            z is not None and not math.isfinite(z)):
+        return None
+    return x, y, z
+
+
+def _find_player(players, eos, name):
+    """Roster player by EOS id, else by a unique normalised name."""
+    if eos:
+        for p in players:
+            if p.get("eosId") == eos:
+                return p
+    if name:
+        cands = [p for p in players if _norm(p.get("name")) == name]
+        if len(cands) == 1:
+            return cands[0]
+    return None
+
+
+def _fill_distance(ev: dict, players: list) -> None:
+    """Fill hitDistance (m) from roster positions: the memory FHitResult
+    distance is a short trace length, not shooter-victim distance."""
+    if ev.get("hitDistance") is not None or ev.get("selfInflicted"):
+        return
+    att = _norm(ev.get("attacker"))
+    if not att:
+        return
+    ap = _find_player(players, ev.get("attackerEosId"), att)
+    if not ap:
+        return
+    a = _xyz((ap.get("soldier") or {}).get("position"))
+    v = _xyz(ev.get("victimPos"))
+    if v is None:
+        vp = _find_player(players, ev.get("victimEosId"), _norm(ev.get("victim")))
+        if vp:
+            v = _xyz((vp.get("soldier") or {}).get("position"))
+    if a is None or v is None:
+        return
+    d2 = (a[0] - v[0]) ** 2 + (a[1] - v[1]) ** 2
+    if a[2] is not None and v[2] is not None:
+        d2 += (a[2] - v[2]) ** 2
+    d = round(math.sqrt(d2) / 100.0, 1)
+    if 1.0 <= d < 10000.0:
+        ev["hitDistance"] = d
+        ev["hitDistanceSource"] = "positions"
+
+
 class DamageEventMerger:
     def __init__(self, window_ticks: int = 3, window_sec: float = 6.0):
         self.window_ticks = window_ticks
@@ -36,6 +93,14 @@ class DamageEventMerger:
         return bool(name) and entry["name"] == name
 
     def merge(self, log_events, mem_events, players, *, tick, now, log_healthy):
+        out = self._merge(log_events, mem_events, players, tick=tick, now=now,
+                          log_healthy=log_healthy)
+        roster = [p for p in (players or []) if isinstance(p, dict)]
+        for ev in out:
+            _fill_distance(ev, roster)
+        return out
+
+    def _merge(self, log_events, mem_events, players, *, tick, now, log_healthy):
         log_events = log_events or []
         mem_events = mem_events or []
         self._buf = [b for b in self._buf

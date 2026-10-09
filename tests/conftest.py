@@ -93,3 +93,16 @@ def end_match(store, snap):
     from sqreader.recording_lifecycle import MATCH_TRANSITION_CONFIRM_TICKS
     for _ in range(MATCH_TRANSITION_CONFIRM_TICKS):
         store.record_tick(snap)
+
+
+def warm_up(store, snap):
+    """Feed `snap` through the stats warm-up window.
+
+    `StatsStore` ignores the collector counters (kills, captures, ...) for the
+    first `_STATS_WARMUP_TICKS` ticks of a new match (they are stored as 0), so
+    a test that expects counters in `player_matches` must record that many
+    ticks first. Pass a snapshot without kill events so none are duplicated.
+    """
+    from sqreader.stats import _STATS_WARMUP_TICKS
+    for _ in range(_STATS_WARMUP_TICKS):
+        store.record_tick(snap)

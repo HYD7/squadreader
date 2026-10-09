@@ -16,7 +16,7 @@ from sqreader.stats import (
 # role normalization (pure)
 # --------------------------------------------------------------------------
 
-from conftest import end_match  # noqa: E402
+from conftest import end_match, warm_up  # noqa: E402
 
 
 def test_role_strips_faction_prefix_and_variant():
@@ -63,6 +63,7 @@ def _p(eos, name, team, *, role=None, squad=None, faction=None, kills=0, deaths=
 
 
 def _play(store, mid, players, start, end, **kw):
+    warm_up(store, _snap(mid, start, players, **kw))
     store.record_tick(_snap(mid, start, players, **kw))
     end_match(store, _snap(mid, end, players, state="WaitingPostMatch", **kw))
 

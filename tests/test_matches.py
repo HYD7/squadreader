@@ -6,7 +6,7 @@ from datetime import datetime
 from sqreader.stats import StatsStore, list_matches, match_detail
 
 
-from conftest import end_match  # noqa: E402
+from conftest import end_match, warm_up  # noqa: E402
 
 
 def _at(iso: str) -> float:
@@ -33,6 +33,7 @@ def _p(eos, name, team, **stats):
 
 
 def _play(store, mid, players, start, end, **kw):
+    warm_up(store, _snap(mid, start, players, **kw))
     store.record_tick(_snap(mid, start, players, **kw))
     end_match(store, _snap(mid, end, players, state="WaitingPostMatch", **kw))
 

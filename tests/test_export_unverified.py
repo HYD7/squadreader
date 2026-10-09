@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 import pytest
 import zz_fixture
+from conftest import warm_up
 from zz_fixture import MATCH_IDS, SERVER_A_ID, SERVER_B_ID, build_zz_fixture
 
 from sqreader.export_api import MIN_TOKEN_LEN, SCHEMA_EXPORT, ExportApi
@@ -539,12 +540,14 @@ def test_counters_are_max_upserts_a_reset_is_not_added_up(tmp_path):
     (it would be 8 if the counter were accumulated across the reset)."""
     db = tmp_path / "s.db"
     store = StatsStore(db, server_id="s")
+    warm_up(store, _snap(0, 0))   # counters are ignored for the first ticks of a match
     for t, k in enumerate([5, 0, 3], start=1):
         store.record_tick(_snap(t, k))
     store.close()
     assert _row(db)[0] == 5
     # and it only rises once it passes the old maximum
     store = StatsStore(db, server_id="s")
+    warm_up(store, _snap(3, 3))   # a reopened store re-adopts the open match: warm-up again
     store.record_tick(_snap(4, 7))
     store.close()
     assert _row(db)[0] == 7
@@ -553,7 +556,8 @@ def test_counters_are_max_upserts_a_reset_is_not_added_up(tmp_path):
 def test_unreadable_counter_becomes_zero_not_null(tmp_path):
     db = tmp_path / "s.db"
     store = StatsStore(db, server_id="s")
-    store.record_tick(_snap(1, None))                     # unreadable on the first tick
+    warm_up(store, _snap(0, None))
+    store.record_tick(_snap(1, None))                     # unreadable on the first counted tick
     assert _row(db)[0] == 0                                # stored as 0, not NULL
     store.record_tick(_snap(2, 4))
     store.record_tick(_snap(3, None))                     # unreadable later: max keeps 4

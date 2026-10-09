@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from conftest import warm_up
 
 from sqreader.stats import (
     SCHEMA_VERSION,
@@ -116,12 +117,14 @@ def test_collector_stats_flow_into_player_matches(tmp_path):
     their columns, cumulative-total ones (supplies/vehicle_damage) uncapped."""
     db = tmp_path / "s.db"
     store = StatsStore(db, server_id="t")
-    store.record_tick(_snap([
+    s = _snap([
         _player("11111111-1111-1111-1111-111111111111", "Alice", 1, kills=5, stats={
             "captures": 3, "defenses": 2, "fobsBuilt": 4, "fobsDestroyed": 1,
             "suppliesDelivered": 42000,   # well past the tight _count cap
             "vehicleDamage": 250000.0,    # well past the _score cap
-        })]))
+        })])
+    warm_up(store, s)   # counters are ignored for the first ticks of a match
+    store.record_tick(s)
     store.close()
 
     r = _rows(db, "SELECT * FROM player_matches WHERE eos_id='11111111-1111-1111-1111-111111111111'")[0]

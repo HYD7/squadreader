@@ -12,7 +12,7 @@ SECRET_HEX = "ab" * 32
 EOS = "11111111-1111-1111-1111-111111111111"
 
 
-from conftest import end_match  # noqa: E402
+from conftest import end_match, warm_up  # noqa: E402
 
 
 def _player(kills):
@@ -52,6 +52,7 @@ def test_recorded_match_pushes_a_bundle_the_central_can_open(tmp_path, monkeypat
     # finalize hook wired to the backlog.
     store = StatsStore(db, server_id="eu1",
                        on_finalize=lambda mid: ic.enqueue(backlog, mid))
+    warm_up(store, _snap("M1", "InProgress", [_player(20)]))
     store.record_tick(_snap("M1", "InProgress", [_player(20)]))
     end_match(store, _snap("M1", "WaitingPostMatch", []))    # → finalize → enqueue
     store.close()

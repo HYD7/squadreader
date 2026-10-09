@@ -131,3 +131,55 @@ def test_empty_and_inputs_not_mutated():
     snap = (dict(le), dict(me))
     run(DamageEventMerger(), [le], [me], 1)
     assert (le, me) == snap
+
+
+def _pos(x, y, z=0.0):
+    return {"soldier": {"position": {"x": x, "y": y, "z": z}}}
+
+
+def _roster(att=True, vic=True, dup=False):
+    r = []
+    if att:
+        r.append({"name": "Al", "eosId": "E-AL", **_pos(0, 0)})
+    if vic:
+        r.append({"name": "Bob", "eosId": "E-BOB", **_pos(30000, 0)})
+    if dup:
+        r.append({"name": "Al", "eosId": "E-AL2", **_pos(5, 5)})
+    return r
+
+
+def _dist_run(roster, log, mem=None):
+    return DamageEventMerger().merge([log], [mem] if mem else [], roster,
+                                     tick=1, now=1.0, log_healthy=True)[0]
+
+
+def test_distance_from_roster_positions():
+    e = _dist_run(_roster(), log_ev(), mem_ev(hitDistance=None, victimPos=None))
+    assert e["hitDistance"] == 300.0 and e["hitDistanceSource"] == "positions"
+    e = _dist_run(_roster(), log_ev())
+    assert e["source"] == "log" and e["hitDistance"] == 300.0
+
+
+def test_distance_prefers_event_victim_pos():
+    mem = mem_ev(hitDistance=None, victimPos={"x": 10000, "y": 0, "z": 0})
+    assert _dist_run(_roster(), log_ev(), mem)["hitDistance"] == 100.0
+
+
+def test_distance_attacker_not_in_roster():
+    e = _dist_run(_roster(att=False), log_ev())
+    assert e["hitDistance"] is None and "hitDistanceSource" not in e
+
+
+def test_distance_not_overwritten():
+    e = _dist_run(_roster(), log_ev(), mem_ev(hitDistance=42.0))
+    assert e["hitDistance"] == 42.0 and "hitDistanceSource" not in e
+
+
+def test_distance_ambiguous_attacker_name():
+    assert _dist_run(_roster(dup=True), log_ev())["hitDistance"] is None
+
+
+def test_distance_missing_position_keys():
+    r = _roster()
+    r[0]["soldier"]["position"] = {"x": 1}
+    assert _dist_run(r, log_ev())["hitDistance"] is None

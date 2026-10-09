@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from conftest import warm_up
 from sqreader.httpsrv import _TickBeat, serve_in_background
 from sqreader.stats import StatsStore
 
@@ -51,6 +52,10 @@ def _seed(db):
         return {"eosId": eos, "name": name, "teamId": team, "soldier": sol,
                 "stats": {"kills": kills}}
 
+    # Counters are ignored for the first ticks of a match: warm up first (no events).
+    warm_up(store, snap(
+        0, "2026-07-15T09:59:58+00:00",
+        [p("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Alice", 1, 0.0, 0.0)], []))
     store.record_tick(snap(
         1, "2026-07-15T10:00:00+00:00",
         [p("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Alice", 1, 0.0, 0.0, kills=1),

@@ -689,3 +689,16 @@ we resolve each unique class's name. Two ways forward, both deferred:
 2. Detect changed objects only — diff InternalIndex set against last tick.
 
 For now 1.6 Hz produces a useful capture.
+
+## 2026-10-09 — TakeHitInfo: headshot kemik adi ve HitResult.Distance
+
+- Kemik adi `Bip01_Head` (onekli); eski kural `== "head"` hic eslesmiyordu.
+  Yeni kural son `_` parcasi == "head" (`Bip01_Neck` headshot degil).
+- Canli olcum (port 7787, 41 asker, son TakeHitInfo, FHitResult @ THI+0x38+0x30):
+  `+0x04` float Time (~0.001, tum gercek vuruslarda; varsayilan 1.0),
+  `+0x08` float Distance (1.0 / 1.414 cm, bir ornek 75.13), `+0x0C` her yerde 0,
+  `+0x10` double Location (+-1e4..1e5, dunya koordinati). Yani UE5 FHitResult'taki
+  FaceIndex/Time/Distance duzeni burada `Time@4, Distance@8`; `HR_DISTANCE_OFFSET=0x08`
+  DOGRU. Distance = Time*~1000 -> sunucuda ~10 m'lik kisa bir izleme; atici
+  mesafesi DEGIL. Bu yuzden hitDistance (>=100 cm kapisi) olaylarin cogunda bos.
+  Gercek atici mesafesi icin atici/kurban konumlari farki kullanilmali.

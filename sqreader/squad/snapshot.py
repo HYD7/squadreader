@@ -2514,6 +2514,12 @@ def peek_take_hit_ts(pm: ProcessMemory, soldier_addr: int) -> float | None:
     return ts if (1.0 < ts < 1e9) else None
 
 
+def is_head_bone(bone: str | None) -> bool:
+    """Real bone names carry a skeleton prefix (Bip01_Head); Bip01_Neck is not
+    a headshot, so compare the last "_"-separated token."""
+    return bool(bone) and bone.lower().rsplit("_", 1)[-1] == "head"
+
+
 def read_take_hit_info(pm: ProcessMemory, alloc: FNameEntryAllocator,
                        arr: GUObjectArray, soldier_addr: int
                        ) -> dict[str, Any] | None:
@@ -2587,7 +2593,7 @@ def read_take_hit_info(pm: ProcessMemory, alloc: FNameEntryAllocator,
     bone = _read_fname(pm, hit_base + HR_BONE_NAME_OFFSET, alloc)
     if bone and bone.lower() not in ("none", ""):
         out["bone"] = bone
-        out["headshot"] = bone.lower() == "head"
+        out["headshot"] = is_head_bone(bone)
 
     return out
 
