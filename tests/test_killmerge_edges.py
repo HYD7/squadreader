@@ -212,3 +212,48 @@ def test_end_to_end_kill_then_unhealthy_fallback_and_stats_source():
     out = DamageEventMerger().merge([], [mem_ev()], PLAYERS, tick=1, now=1.0,
                                     log_healthy=False)
     assert out[0]["source"] == "memory"
+
+
+def test_emitted_entry_of_other_attacker_does_not_swallow_log_event():
+    # scenario A: Bob's wound was published from memory while unhealthy;
+    # a later hit by Carl must not be dropped against that emitted entry
+    m = DamageEventMerger()
+    out = run(m, [], [mem_ev(killed=False, attacker="Bob")], 1, healthy=False)
+    assert [o["source"] for o in out] == ["memory"]
+    out = run(m, [log_ev(killed=False, attacker="Carl")], [], 2)
+    assert [(o["source"], o["attacker"]) for o in out] == [("log", "Carl")]
+    out = run(m, [], [mem_ev(killed=False, attacker="Carl")], 3)
+    assert out == []
+
+
+def test_emitted_entry_same_attacker_is_skipped():
+    m = DamageEventMerger()
+    run(m, [], [mem_ev(killed=False, attacker="Bob")], 1, healthy=False)
+    assert run(m, [log_ev(killed=False, attacker="bob")], [], 2) == []
+
+
+def test_same_drain_two_attackers_emitted_and_fresh_memory():
+    # scenario B: log(Bob) -> emitted Bob, log(Carl) -> fresh mem(Carl)
+    m = DamageEventMerger()
+    run(m, [], [mem_ev(killed=False, attacker="Bob")], 1, healthy=False)
+    out = run(m, [log_ev(killed=False, attacker="Bob"),
+                  log_ev(killed=False, attacker="Carl")],
+              [mem_ev(killed=False, attacker="Carl")], 2)
+    assert [(o["source"], o["attacker"]) for o in out] == [
+        ("log+memory", "Carl")]
+
+
+def test_oldest_candidate_preferred_among_non_emitted():
+    m = DamageEventMerger()
+    run(m, [], [mem_ev(bone="old")], 1)
+    run(m, [], [mem_ev(bone="new")], 2)
+    assert run(m, [log_ev()], [], 3)[0]["bone"] == "old"
+
+
+def test_attacker_ctrl_addr_not_copied_to_suicide():
+    m = DamageEventMerger()
+    out = run(m, [log_ev(attacker=None, selfInflicted=True)], [mem_ev()], 1)
+    assert out[0]["source"] == "log+memory"
+    assert out[0].get("attackerCtrlAddr") is None
+    out = run(m, [log_ev()], [mem_ev()], 2)
+    assert out[0]["attackerCtrlAddr"] == 99

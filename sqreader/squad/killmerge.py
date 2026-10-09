@@ -9,8 +9,7 @@ import copy
 from typing import Optional
 
 _COPY_FIELDS = ("victimEosId", "victimTeam", "victimSoldier", "victimPos",
-                "causerClass", "damage", "hitDistance", "headshot", "bone",
-                "attackerCtrlAddr")
+                "causerClass", "damage", "hitDistance", "headshot", "bone")
 
 
 def _kind(ev: dict) -> Optional[str]:
@@ -70,10 +69,21 @@ class DamageEventMerger:
             eos = ev.get("victimEosId") or name_to_eos.get(name, "")
             hit = None
             if kind:
-                for b in reversed(self._buf):
-                    if b["kind"] == kind and self._same_victim(b, eos, name):
-                        hit = b
+                att = _norm(ev.get("attacker"))
+                for b in self._buf:     # oldest first
+                    if b["kind"] != kind or not self._same_victim(b, eos, name):
+                        continue
+                    if b.get("emitted"):
+                        # an already-published memory event only stands for
+                        # this log event if the attacker is the same
+                        # (or unknown in memory)
+                        m_att = _norm(b["ev"].get("attacker"))
+                        if m_att and m_att != att:
+                            continue
+                        hit = b         # emitted + attacker fits: best
                         break
+                    if hit is None:
+                        hit = b         # else the oldest candidate
             if hit is None:
                 ev["source"] = "log"
                 out.append(ev)
@@ -90,6 +100,7 @@ class DamageEventMerger:
             # the log is authoritative for the attacker: never take it from
             # memory. Suicides / world deaths (no attacker) stay untouched.
             if ev.get("attacker") and not ev.get("selfInflicted"):
+                ev["attackerCtrlAddr"] = copy.deepcopy(m.get("attackerCtrlAddr"))
                 if (not ev.get("attackerEosId")
                         and _norm(m.get("attacker")) == _norm(ev["attacker"])):
                     ev["attackerEosId"] = m.get("attackerEosId")
