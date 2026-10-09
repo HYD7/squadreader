@@ -209,7 +209,7 @@ class DamageLogParser:
         ts = _parse_ts(line) or self._last_ts
         self._last_ts = ts
 
-        if "Bringing World" in line:
+        if "LogWorld: Bringing World" in line:
             # New map/match: nothing remembered from the last one may leak in
             # (round-end deaths arrive AFTER WaitingPostMatch, so that state
             # change is deliberately not a reset point).
