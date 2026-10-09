@@ -42,9 +42,14 @@ class DamageEventMerger:
         self._buf = [b for b in self._buf
                      if tick - b["tick"] <= self.window_ticks
                      and now - b["now"] <= self.window_sec]
-        name_to_eos = {_norm(p.get("name")): p["eosId"]
-                       for p in (players or [])
-                       if p.get("name") and p.get("eosId")}
+        seen: dict[str, set] = {}
+        for p in (players or []):
+            if p.get("name") and p.get("eosId"):
+                seen.setdefault(_norm(p["name"]), set()).add(p["eosId"])
+        # a name shared by several players is ambiguous: leave it to the
+        # name-based match instead of guessing one EOS
+        name_to_eos = {n: next(iter(e)) for n, e in seen.items()
+                       if len(e) == 1}
 
         fresh = []
         for m in mem_events:
@@ -75,21 +80,28 @@ class DamageEventMerger:
                 continue
             self._buf.remove(hit)
             used.add(id(hit))
+            if hit.get("emitted"):
+                # same death already published as "memory" while the log was
+                # unhealthy: do not count it a second time
+                continue
             m = hit["ev"]
             for f in _COPY_FIELDS:
                 ev[f] = copy.deepcopy(m.get(f))
-            if not ev.get("attackerEosId"):
-                ev["attackerEosId"] = m.get("attackerEosId")
-            if not ev.get("causerWeapon"):
-                ev["causerWeapon"] = m.get("causerWeapon")
-            if not ev.get("attacker") and not ev.get("selfInflicted"):
-                ev["attacker"] = m.get("attacker")
+            # the log is authoritative for the attacker: never take it from
+            # memory. Suicides / world deaths (no attacker) stay untouched.
+            if ev.get("attacker") and not ev.get("selfInflicted"):
+                if (not ev.get("attackerEosId")
+                        and _norm(m.get("attacker")) == _norm(ev["attacker"])):
+                    ev["attackerEosId"] = m.get("attackerEosId")
+                if not ev.get("causerWeapon"):
+                    ev["causerWeapon"] = m.get("causerWeapon")
             ev["source"] = "log+memory"
             out.append(ev)
 
         if not log_healthy:
             for b in fresh:
                 if id(b) not in used:
+                    b["emitted"] = True
                     ev = copy.deepcopy(b["ev"])
                     ev["source"] = "memory"
                     out.append(ev)

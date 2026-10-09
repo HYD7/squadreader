@@ -86,12 +86,31 @@ def test_log_fields_win():
     assert e["damageType"] == "Melee"
 
 
-def test_empty_attacker_filled_unless_self_inflicted():
-    out = run(DamageEventMerger(), [log_ev(attacker=None)], [mem_ev()], 3)
-    assert out[0]["attacker"] == "Al"
-    out = run(DamageEventMerger(),
-              [log_ev(attacker=None, selfInflicted=True)], [mem_ev()], 3)
-    assert out[0]["attacker"] is None
+def test_suicide_and_world_death_not_filled_from_memory():
+    for kw in ({"attacker": None, "selfInflicted": True},
+               {"attacker": None, "damageType": "Fall"}):
+        out = run(DamageEventMerger(), [log_ev(**kw)], [mem_ev()], 3)
+        assert out[0]["source"] == "log+memory"
+        assert out[0]["attacker"] is None
+        assert out[0]["attackerEosId"] is None
+        assert out[0]["causerWeapon"] is None
+
+
+def test_attacker_eos_only_when_names_agree():
+    out = run(DamageEventMerger(), [log_ev(attacker="Al")], [mem_ev()], 3)
+    assert out[0]["attackerEosId"] == "E-AL"
+    out = run(DamageEventMerger(), [log_ev(attacker="Carl")], [mem_ev()], 3)
+    assert out[0]["attackerEosId"] is None
+    assert out[0]["attacker"] == "Carl"
+
+
+def test_duplicate_roster_name_matches_by_name():
+    players = [{"name": "John", "eosId": "j1"}, {"name": "John", "eosId": "j2"}]
+    m = DamageEventMerger()
+    out = m.merge([log_ev("John")], [mem_ev("John", "j1")], players,
+                  tick=1, now=1.0, log_healthy=True)
+    assert len(out) == 1 and out[0]["source"] == "log+memory"
+    assert out[0]["victimEosId"] == "j1"
 
 
 def test_clan_tag_base_name_matches_without_eos():

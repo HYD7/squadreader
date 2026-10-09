@@ -126,16 +126,14 @@ def test_health_flip_healthy_to_unhealthy_unmatched_memory_appears():
     assert [o["victim"] for o in out] == ["Al"]
 
 
-def test_health_flip_unhealthy_then_healthy_log_double_count_documented():
-    """Memory event emitted while unhealthy stays in the buffer; a log event
-    for the same death arriving after recovery (within window) merges with it.
-    That yields a second event for one death (one 'memory', one
-    'log+memory'). Pinned so a behaviour change is noticed."""
+def test_health_flip_unhealthy_then_healthy_no_double_count():
+    """A death already published as 'memory' while unhealthy is not published
+    again when its log event shows up after recovery."""
     m = DamageEventMerger()
     first = run(m, [], [mem_ev()], 1, healthy=False)
     second = run(m, [log_ev()], [], 2, healthy=True)
     assert [e["source"] for e in first] == ["memory"]
-    assert [e["source"] for e in second] == ["log+memory"]
+    assert second == []
 
 
 def test_cli_midtransition_events_not_lost(capsys):
@@ -152,6 +150,7 @@ def test_cli_midtransition_events_not_lost(capsys):
             return self.ok
 
     t, m, st = T(), DamageEventMerger(), {}
+    cli._merge_damage_events({}, PLAYERS, t, m, 0, st)
     snap = {"damageEvents": [mem_ev()]}
     t.ok = False
     cli._merge_damage_events(snap, PLAYERS, t, m, 1, st)
@@ -161,7 +160,8 @@ def test_cli_midtransition_events_not_lost(capsys):
     snap = {"damageEvents": []}
     cli._merge_damage_events(snap, PLAYERS, t, m, 2, st)
     assert [e["source"] for e in snap["damageEvents"]] == ["log"]
-    assert capsys.readouterr().err.count("tekrar okunuyor") == 1
+    err = capsys.readouterr().err
+    assert err.count("okunamıyor") == 1 and err.count("tekrar okunuyor") == 1
 
 
 def test_cli_missing_damage_events_key_and_none():

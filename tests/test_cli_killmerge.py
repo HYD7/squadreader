@@ -46,13 +46,33 @@ def test_unhealthy_passes_memory():
 
 
 def test_warning_once(capsys):
-    t, m, st = FakeTailer([], ok=False), DamageEventMerger(), {}
-    for i in range(3):
+    t, m, st = FakeTailer([]), DamageEventMerger(), {}
+    cli._merge_damage_events({}, PLAYERS, t, m, 0, st)
+    assert capsys.readouterr().err == ""      # first observation: silent
+    t.ok = False
+    for i in range(1, 4):
         cli._merge_damage_events({}, PLAYERS, t, m, i, st)
     err = capsys.readouterr().err
     assert err.count("okunamıyor") == 1
     t.ok = True
-    for i in range(3, 6):
+    for i in range(4, 7):
         cli._merge_damage_events({}, PLAYERS, t, m, i, st)
     err = capsys.readouterr().err
     assert err.count("tekrar okunuyor") == 1
+
+
+def test_first_tick_unhealthy_no_warning(capsys):
+    cli._merge_damage_events({}, PLAYERS, FakeTailer([], ok=False),
+                             DamageEventMerger(), 0, {})
+    assert capsys.readouterr().err == ""
+
+
+def test_merge_exception_falls_back_to_log_events(capsys):
+    class Boom:
+        def merge(self, *a, **k):
+            raise RuntimeError("x")
+
+    snap = {"damageEvents": [_mem()]}
+    cli._merge_damage_events(snap, PLAYERS, FakeTailer([_log()]), Boom(), 1, {})
+    assert [e["attacker"] for e in snap["damageEvents"]] == ["Bob"]
+    assert "kill merge error" in capsys.readouterr().err

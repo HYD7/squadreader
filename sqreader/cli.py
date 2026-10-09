@@ -774,18 +774,22 @@ def _merge_damage_events(snap: dict, players: list, log_tailer: Any,
     once per transition, not every tick."""
     from .squad.logtail import resolve_event_names
     healthy = bool(log_tailer.healthy())
-    was = state.get("healthy", True)
-    if was and not healthy:
+    was = state.get("healthy")      # None until first observation: no warning
+    if was is True and not healthy:
         print("  Squad logu okunamıyor, kill feed bellek olaylarına düştü: "
               f"{getattr(log_tailer, 'path', '?')}", file=sys.stderr)
-    elif healthy and not was:
+    elif was is False and healthy:
         print("  Squad logu tekrar okunuyor, kill feed log ile birleşiyor: "
               f"{getattr(log_tailer, 'path', '?')}", file=sys.stderr)
     state["healthy"] = healthy
-    snap["damageEvents"] = merger.merge(
-        resolve_event_names(log_tailer.drain(), players),
-        snap.get("damageEvents") or [], players,
-        tick=tick, now=time.monotonic(), log_healthy=healthy)
+    log_events = resolve_event_names(log_tailer.drain(), players)
+    try:
+        snap["damageEvents"] = merger.merge(
+            log_events, snap.get("damageEvents") or [], players,
+            tick=tick, now=time.monotonic(), log_healthy=healthy)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[tick {tick}] kill merge error: {e!r}", file=sys.stderr)
+        snap["damageEvents"] = log_events
 
 
 def _live_publish(hub: Any, line: str, kind: str, snap: dict | None,
