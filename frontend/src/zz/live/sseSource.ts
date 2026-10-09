@@ -65,6 +65,36 @@ export function isTicketExpired(ticket: string, nowMs: number): boolean {
   }
 }
 
+/** Seconds-before-expiry at which the embedded viewer asks its parent page for
+ *  a fresh ticket, and how long it waits for the answer. */
+export const TICKET_REFRESH_LEAD_MS = 60_000;
+export const TICKET_REPLY_TIMEOUT_MS = 15_000;
+
+/** Epoch ms at which the ticket expires, or null when it cannot be decoded. */
+export function ticketExpiryMs(ticket: string): number | null {
+  try {
+    const parts = ticket.split(".");
+    if (parts.length < 2 || !parts[1]) return null;
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const obj: unknown = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))));
+    const e = obj && typeof obj === "object" ? (obj as { e?: unknown }).e : undefined;
+    return typeof e === "number" && Number.isFinite(e) ? e * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The slice of `window` used for the ticket hand-off with the parent page. */
+export interface TicketWindowLike {
+  parent: unknown;
+  location: { origin: string };
+  addEventListener(type: "message", fn: (ev: TicketMessageLike) => void): void;
+  removeEventListener(type: "message", fn: (ev: TicketMessageLike) => void): void;
+}
+export interface TicketMessageLike { origin?: unknown; source?: unknown; data?: unknown }
+
 export const browserEventSource: EventSourceFactory = (url) =>
   new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike;
 
@@ -77,6 +107,11 @@ export interface SseSourceOptions {
   random?: () => number;
   /** Epoch milliseconds (tests inject a fixed clock). */
   now?: () => number;
+  /** Admin `alert` SSE event payload (parsed JSON). */
+  onAlert?: (payload: unknown) => void;
+  /** Window used to ask the parent page for a new ticket (tests inject one;
+   *  default `window`, when there is one). Only an iframe asks. */
+  win?: TicketWindowLike | null;
 }
 
 export function createSseSource(opts: SseSourceOptions): LiveSource {
@@ -94,6 +129,81 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
   let failures = 0;
   let everOpened = false;
   let conn: ConnState | null = null;
+  let ticket = opts.ticket;
+  let refreshTimer: unknown = null;
+  let replyTimer: unknown = null;
+  let pending = false;
+  let pendingReactive = false;
+  let listening = false;
+
+  const win: TicketWindowLike | null = opts.win !== undefined ? opts.win
+    : (typeof window !== "undefined" ? (window as unknown as TicketWindowLike) : null);
+  const parentWin = (): { postMessage(m: unknown, origin: string): void } | null => {
+    if (!win || !win.parent || win.parent === win) return null;
+    const p = win.parent as { postMessage?: unknown };
+    return typeof p.postMessage === "function"
+      ? (win.parent as { postMessage(m: unknown, origin: string): void }) : null;
+  };
+  const canRefresh = () => parentWin() !== null && ticket !== "";
+
+  function onWinMessage(ev: TicketMessageLike) {
+    if (!win || ev.origin !== win.location.origin || ev.source !== win.parent) return;
+    const d = ev.data;
+    if (!d || typeof d !== "object" || !pending) return;
+    const m = d as { type?: unknown; bilet?: unknown };
+    if (m.type === "zz-ticket-error") { ticketFailed(); return; }
+    if (m.type !== "zz-ticket" || typeof m.bilet !== "string"
+        || m.bilet.length === 0 || m.bilet.length > 2048
+        || isTicketExpired(m.bilet, now())) return;
+    endPending();
+    ticket = m.bilet;
+    failures = 0;
+    if (!running) return;
+    clearTimers();
+    setConn("connecting");
+    open();                             // gen++ inside: the old stream is dead
+  }
+  function endPending() {
+    pending = false; pendingReactive = false;
+    if (replyTimer !== null) { timers.clearTimeout(replyTimer); replyTimer = null; }
+  }
+  /** No answer / refusal: only a stream that already failed on an expired
+   *  ticket falls back to ticket_expired; a proactive miss changes nothing. */
+  function ticketFailed() {
+    const reactive = pendingReactive;
+    endPending();
+    if (!running || !reactive) return;
+    closeStream();
+    clearTimers();
+    setConn("ticket_expired");
+  }
+  function requestTicket(reactive: boolean) {
+    if (pending) { if (reactive) pendingReactive = true; return; }
+    const parent = parentWin();
+    if (!parent || !win) return;
+    if (!listening) { win.addEventListener("message", onWinMessage); listening = true; }
+    pending = true; pendingReactive = reactive;
+    replyTimer = timers.setTimeout(() => { replyTimer = null; ticketFailed(); },
+                                   TICKET_REPLY_TIMEOUT_MS);
+    try { parent.postMessage({ type: "zz-ticket-request" }, win.location.origin); }
+    catch { ticketFailed(); }
+  }
+  function scheduleRefresh() {
+    if (refreshTimer !== null) { timers.clearTimeout(refreshTimer); refreshTimer = null; }
+    if (!canRefresh()) return;
+    const exp = ticketExpiryMs(ticket);
+    if (exp === null) return;
+    const wait = Math.max(0, exp - TICKET_REFRESH_LEAD_MS - now());
+    refreshTimer = timers.setTimeout(() => {
+      refreshTimer = null;
+      if (running) requestTicket(false);
+    }, wait);
+  }
+  function detach() {
+    if (listening && win) win.removeEventListener("message", onWinMessage);
+    listening = false;
+    endPending();
+  }
 
   function setConn(state: ConnState) {
     if (conn === state) return;
@@ -103,6 +213,7 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
   function clearTimers() {
     if (retryTimer !== null) { timers.clearTimeout(retryTimer); retryTimer = null; }
     if (watchdog !== null) { timers.clearTimeout(watchdog); watchdog = null; }
+    if (refreshTimer !== null) { timers.clearTimeout(refreshTimer); refreshTimer = null; }
   }
   function closeStream() {
     if (es) {
@@ -128,9 +239,15 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     closeStream();
     if (watchdog !== null) { timers.clearTimeout(watchdog); watchdog = null; }
     failures++;
-    if (failures >= SSE_EXPIRED_CHECK_AFTER && isTicketExpired(opts.ticket, now())) {
+    if (failures >= SSE_EXPIRED_CHECK_AFTER && isTicketExpired(ticket, now())) {
       // The server answers an expired ticket with 403 and EventSource closes
-      // for good; retrying with the same ticket is pointless.
+      // for good; retrying with the same ticket is pointless. An embedded
+      // viewer asks the parent page for a new one first.
+      if (canRefresh()) {
+        setConn("connecting");
+        requestTicket(true);
+        return;
+      }
       setConn("ticket_expired");
       return;
     }
@@ -151,13 +268,14 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     closeStream();
     let stream: EventSourceLike;
     try {
-      stream = factory(adminStreamUrl(opts.server, opts.ticket));
+      stream = factory(adminStreamUrl(opts.server, ticket));
     } catch {
       failed(myGen);
       return;
     }
     es = stream;
     armWatchdog(myGen);
+    scheduleRefresh();
     stream.onopen = () => {
       if (!running || myGen !== gen) return;
       everOpened = true;
@@ -207,6 +325,12 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
       emit({ type: "line", obj: typeof epoch === "number"
         ? { t: "reset", epoch } : { t: "reset" } });
     });
+    stream.addEventListener("alert", (ev) => {
+      if (!alive()) return;
+      armWatchdog(myGen);
+      const obj = parse(ev.data);
+      if (obj !== undefined) opts.onAlert?.(obj);
+    });
     stream.addEventListener("hb", () => {
       if (!alive()) return;
       armWatchdog(myGen);
@@ -218,6 +342,7 @@ export function createSseSource(opts: SseSourceOptions): LiveSource {
     gen++;
     clearTimers();
     closeStream();
+    detach();
   }
 
   return {

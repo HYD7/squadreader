@@ -249,5 +249,125 @@ for (const bad of ["secret-ticket-123", "v1.!!!.sig", mkTicket("not json"), mkTi
   h.src.stop();
 }
 
+// --- ticket refresh through the parent page (iframe) + alert event
+{
+  type Msg = { origin?: unknown; source?: unknown; data?: unknown };
+  const mkWin = (embedded: boolean) => {
+    const posted: { msg: unknown; origin: string }[] = [];
+    const handlers: ((ev: Msg) => void)[] = [];
+    const parent = { postMessage: (msg: unknown, origin: string) => { posted.push({ msg, origin }); } };
+    const win: Record<string, unknown> = {
+      location: { origin: "https://zz.test" },
+      addEventListener: (_t: string, fn: (ev: Msg) => void) => { handlers.push(fn); },
+      removeEventListener: (_t: string, fn: (ev: Msg) => void) => {
+        const i = handlers.indexOf(fn); if (i >= 0) handlers.splice(i, 1);
+      },
+    };
+    win.parent = embedded ? parent : win;
+    return { win, parent, posted, handlers,
+             send: (m: Msg) => { for (const h of [...handlers]) h(m); } };
+  };
+  const setupRefresh = (embedded: boolean, expSec = NOW_MS / 1000 + 600) => {
+    const w = mkWin(embedded);
+    const timers = fakeTimers();
+    const events: SourceEvent[] = [];
+    const streams: FakeES[] = [];
+    const alerts: unknown[] = [];
+    let clock = NOW_MS;
+    const src = createSseSource({
+      server: "zz-7787", ticket: mkTicket({ u: "a", s: "zz-7787", e: expSec }),
+      now: () => clock, onEvent: (e) => events.push(e), timers, random: () => 0.5,
+      onAlert: (p) => alerts.push(p),
+      win: w.win as never,
+      factory: (url) => { const x = new FakeES(url); streams.push(x); return x; },
+    });
+    return { w, timers, events, streams, alerts, src, setClock: (v: number) => { clock = v; } };
+  };
+  async function quickFail(h: { streams: FakeES[]; timers: { advance(ms: number): Promise<void> } }, n: number) {
+    for (let i = 0; i < n; i++) {
+      h.streams[h.streams.length - 1]!.fail(true);
+      await h.timers.advance(2_000);
+    }
+  }
+  const fresh = mkTicket({ u: "a", s: "zz-7787", e: NOW_MS / 1000 + 1200 });
+
+  // proactive request 60 s before expiry; reply reconnects with the new ticket
+  {
+    const h = setupRefresh(true);
+    h.src.start();
+    h.streams[0]!.open();
+    for (let i = 0; i < 17; i++) { await h.timers.advance(30_000); h.streams[0]!.emit("hb", ""); }
+    eq(h.w.posted.length, 0, "no request before expiry-60s");
+    h.setClock(NOW_MS + 540_000);
+    await h.timers.advance(30_000);
+    eq(h.w.posted.length, 1, "one proactive request at expiry-60s");
+    eq(h.w.posted[0]!.msg, { type: "zz-ticket-request" }, "request message");
+    eq(h.w.posted[0]!.origin, "https://zz.test", "request targets own origin");
+    // foreign origin / wrong source are ignored
+    h.w.send({ origin: "https://evil.test", source: h.w.parent, data: { type: "zz-ticket", bilet: fresh } });
+    h.w.send({ origin: "https://zz.test", source: {}, data: { type: "zz-ticket", bilet: fresh } });
+    eq(h.streams.length, 1, "foreign origin / non-parent source ignored");
+    h.w.send({ origin: "https://zz.test", source: h.w.parent, data: { type: "zz-ticket", bilet: fresh } });
+    eq(h.streams.length, 2, "reconnected after zz-ticket");
+    ok(h.streams[1]!.url.endsWith(`bilet=${encodeURIComponent(fresh)}`), "new ticket in the url");
+    ok(h.streams[0]!.closed, "old stream closed");
+    h.streams[1]!.open();
+    eq(conns(h.events), ["connecting", "live", "connecting", "live"], "connecting -> live again");
+    await h.timers.advance(60_000);
+    eq(h.w.posted.length, 1, "no reply timeout side effects after success");
+    h.src.stop();
+    eq(h.w.handlers.length, 0, "listener removed on stop");
+  }
+  // no reply in 15 s after a failure on an expired ticket -> ticket_expired; one pending request
+  {
+    const h = setupRefresh(true, NOW_MS / 1000 - 60);
+    h.src.start();
+    await quickFail(h, 3);
+    eq(h.w.posted.length, 1, "expired ticket: one request (deduplicated)");
+    ok(!conns(h.events).includes("ticket_expired"), "waiting for the parent");
+    await h.timers.advance(15_000);
+    eq(conns(h.events).pop(), "ticket_expired", "no reply in 15 s -> ticket_expired");
+    h.src.stop();
+  }
+  // zz-ticket-error -> ticket_expired
+  {
+    const h = setupRefresh(true, NOW_MS / 1000 - 60);
+    h.src.start();
+    await quickFail(h, 3);
+    h.w.send({ origin: "https://zz.test", source: h.w.parent, data: { type: "zz-ticket-error" } });
+    eq(conns(h.events).pop(), "ticket_expired", "zz-ticket-error -> ticket_expired");
+    h.src.stop();
+  }
+  // expired ticket, parent answers -> back to live
+  {
+    const h = setupRefresh(true, NOW_MS / 1000 - 60);
+    h.src.start();
+    await quickFail(h, 3);
+    h.w.send({ origin: "https://zz.test", source: h.w.parent, data: { type: "zz-ticket", bilet: fresh } });
+    h.streams[h.streams.length - 1]!.open();
+    eq(conns(h.events).pop(), "live", "live after reactive refresh");
+    h.src.stop();
+  }
+  // not an iframe: nothing is posted, old behaviour
+  {
+    const h = setupRefresh(false, NOW_MS / 1000 - 60);
+    h.src.start();
+    await quickFail(h, 3);
+    eq(h.w.posted.length, 0, "no request when not in an iframe");
+    eq(conns(h.events).pop(), "ticket_expired", "not embedded: plain ticket_expired");
+    h.src.stop();
+  }
+  // alert event
+  {
+    const h = setupRefresh(false);
+    h.src.start();
+    h.streams[0]!.open();
+    h.streams[0]!.emit("alert", JSON.stringify({ kind: "x", n: 1 }));
+    h.streams[0]!.emit("alert", "not json");
+    eq(h.alerts, [{ kind: "x", n: 1 }], "alert reaches onAlert (bad json dropped)");
+    h.src.stop();
+  }
+}
+
 console.log(`zz live sseSource: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -28,6 +28,8 @@ export interface LiveFeedDeps {
   timers?: Timers;
   fetchImpl?: typeof fetch;
   eventSourceFactory?: EventSourceFactory;
+  /** Admin SSE `alert` event payload. */
+  onAlert?: (payload: unknown) => void;
 }
 
 export interface LiveFeedCallbacks {
@@ -116,7 +118,7 @@ export function createLiveFeed(loc: ZzLiveLocation, deps: LiveFeedDeps,
   source = admin
     ? createSseSource({
       server: loc.server, ticket: loc.kind === "admin-live" ? loc.ticket : "",
-      onEvent, timers, factory: deps.eventSourceFactory,
+      onEvent, timers, factory: deps.eventSourceFactory, onAlert: deps.onAlert,
     })
     : segSource!;
 
