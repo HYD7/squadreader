@@ -151,5 +151,9 @@ for (const r of ["Driver", "Gunner", "Passenger", "Commander", "Pilot", "Loader"
 }
 for (const s of ["standing", "crouched", "prone"]) ok(`pp.stance.${s}` in dict, `pp.stance.${s}`);
 
+for (const k of ["alert.rule.teamkill", "alert.rule.default", "alert.dismiss",
+                 "alert.severity.warn", "alert.severity.high"])
+  ok(k in dict, `alert key ${k}`);
+
 console.log(`zz tr: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -36,7 +36,8 @@ const store: LiveFeedStore = {
   setStatus: (s) => useViewerStore.getState().setStatus(s),
 };
 
-export function useLiveFeed(loc: ZzLiveLocation): LiveFeedView {
+export function useLiveFeed(loc: ZzLiveLocation,
+                            onAlert?: (payload: unknown) => void): LiveFeedView {
   useKillFeed();
 
   const admin = loc.kind === "admin-live";
@@ -46,6 +47,8 @@ export function useLiveFeed(loc: ZzLiveLocation): LiveFeedView {
   const [delaySec, setDelaySec] = useState<number | null>(null);
   const [end, setEnd] = useState<EndState>({ phase: "hidden" });
   const feedRef = useRef<LiveFeed | null>(null);
+  const alertRef = useRef(onAlert);
+  alertRef.current = onAlert;
 
   useEffect(() => {
     const target: ZzLiveLocation = loc.kind === "admin-live"
@@ -55,6 +58,7 @@ export function useLiveFeed(loc: ZzLiveLocation): LiveFeedView {
       store,
       now: () => performance.now(),
       navigate: (url) => navigateTop(url, window),
+      onAlert: (p) => alertRef.current?.(p),
     }, {
       onConn: setConn,
       onDelay: setDelaySec,

@@ -328,7 +328,14 @@ export const TR_DICT = {
   "info.badge.overlapped": "Engelli",
   "info.badge.locked": "Kilitli",
   "info.badge.tracer": "İz bırakan",
-  "info.badge.impacted": "İsabet etti"
+  "info.badge.impacted": "İsabet etti",
+
+  // ---- admin-live alert strip
+  "alert.rule.teamkill": "Takım öldürme",
+  "alert.rule.default": "Uyarı",
+  "alert.dismiss": "Kapatmak için tıklayın",
+  "alert.severity.warn": "Dikkat",
+  "alert.severity.high": "Yüksek",
 } as const;
 
 export type TrKey = keyof typeof TR_DICT;

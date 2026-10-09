@@ -76,6 +76,32 @@ export function parseZzLocation(search: string): ZzLocation {
   return { ok: true, id };
 }
 
+/** Message sent to the embedding page (ZZ admin panel) when the administrator
+ *  selects a player in the admin-live viewer. `alias` = the sanitized player
+ *  alias (the frame's eosId field); null = selection cleared. */
+export interface ZzPlayerSelectMessage {
+  type: "zz-player-select";
+  alias: string | null;
+  name?: string;
+}
+
+/** True only for the admin-live kind inside an embedding parent window.
+ *  Replay and public live never notify the parent. */
+export function shouldNotifyParent(
+  kind: "replay" | "live" | "admin-live" | null | undefined,
+  win: { parent?: unknown } | null | undefined,
+): boolean {
+  return kind === "admin-live" && !!win && !!win.parent && win.parent !== win;
+}
+
+export function playerSelectMessage(
+  p: { eosId?: string | null; name?: string | null } | null | undefined,
+): ZzPlayerSelectMessage | null {
+  if (p == null) return { type: "zz-player-select", alias: null };
+  if (typeof p.eosId !== "string" || p.eosId === "") return null;
+  return { type: "zz-player-select", alias: p.eosId, name: p.name ?? p.eosId };
+}
+
 /** Relative endpoints the viewer may call (resolved against /tekrar/). */
 export function metaUrl(id: string): string {
   return `./api/recording/${encodeURIComponent(id)}/meta`;

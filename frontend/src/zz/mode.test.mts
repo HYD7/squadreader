@@ -3,7 +3,7 @@
 import {
   isZeroZoneMode, isValidMatchId, parseZzLocation, metaUrl, recordingUrl,
   backUrl, classifyHttpStatus, errorText, normalizeSourceUrl, TR,
-  isValidServerId, isValidTicket, isLiveLocation,
+  isValidServerId, isValidTicket, isLiveLocation, shouldNotifyParent, playerSelectMessage,
 } from "./mode.ts";
 
 let passed = 0, failed = 0;
@@ -113,6 +113,21 @@ eq(normalizeSourceUrl("https://example.org/repo"), "https://example.org/repo",
 eq(normalizeSourceUrl(" https://example.org/repo "), "https://example.org/repo",
    "trimmed");
 eq(normalizeSourceUrl(42), null, "non-string -> no link");
+
+// --- parent notification only in admin-live, only when embedded
+{
+  const top: { parent?: unknown } = {}; top.parent = top;
+  const emb = { parent: {} };
+  ok(shouldNotifyParent("admin-live", emb), "admin-live embedded notifies");
+  ok(!shouldNotifyParent("admin-live", top), "admin-live top-level does not");
+  ok(!shouldNotifyParent("live", emb), "public live never notifies");
+  ok(!shouldNotifyParent("replay", emb), "replay never notifies");
+  ok(!shouldNotifyParent(null, emb) && !shouldNotifyParent("admin-live", null), "null safe");
+  eq(playerSelectMessage(null), { type: "zz-player-select", alias: null }, "clear msg");
+  eq(playerSelectMessage({ eosId: "a1", name: "Bob" }),
+     { type: "zz-player-select", alias: "a1", name: "Bob" }, "select msg");
+  eq(playerSelectMessage({ eosId: null, name: "Bot" }), null, "no alias -> no msg");
+}
 
 console.log(`zz mode: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

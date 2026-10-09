@@ -1,7 +1,7 @@
 // Zero Zone viewer root: replay (`?mode=replay&id=`) and live (`?mode=live&server=`,
 // `?mode=admin-live&server=&bilet=`). No recording picker, no stats pages, no
 // analytics. Everything it loads is same-origin.
-import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { MapCanvas } from "../canvas/MapCanvas";
 import type { Hit } from "../canvas/hitTest";
 import { TopBar } from "../ui/TopBar";
@@ -25,10 +25,15 @@ import { SourceLink } from "./SourceLink";
 import { MapNotice } from "./MapNotice";
 import { ZzMessage } from "./ZzMessage";
 import { useZzGate } from "./useZzGate";
-import { errorText, parseZzLocation, TR, type ZzLiveLocation } from "./mode";
+import {
+  errorText, parseZzLocation, playerSelectMessage, shouldNotifyParent, TR,
+  type ZzLiveLocation,
+} from "./mode";
 import { useLiveFeed } from "./live/useLiveFeed";
 import { LiveBadge, LiveStatusOverlay } from "./live/LiveStatus";
 import { LiveEndOverlay } from "./live/LiveEndOverlay";
+import { LiveAlertStrip } from "./live/LiveAlertStrip";
+import { parseAlert, pushAlert, type AlertItem } from "./live/alertState";
 
 // Same lazy split as upstream: the loadout catalog loads on first vehicle click.
 const VehiclePanel = lazy(() =>
@@ -158,7 +163,28 @@ function Viewer() {
 /** Live viewer: no timeline / seek / speed controls (they only render in replay
  *  mode), a "CANLI" badge, Turkish connection layers and the end-of-match layer. */
 function LiveViewer({ loc }: { loc: ZzLiveLocation }) {
-  const feed = useLiveFeed(loc);
+  const admin = loc.kind === "admin-live";
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const alertId = useRef(0);
+  const onAlert = useCallback((payload: unknown) => {
+    const item = parseAlert(payload, Date.now(), ++alertId.current);
+    if (item) setAlerts((l) => pushAlert(l, item));
+  }, []);
+  const feed = useLiveFeed(loc, admin ? onAlert : undefined);
+
+  // Admin-live only: tell the embedding page which player is selected.
+  const selKey = useViewerStore((s) => s.selectedPlayerKey);
+  const selPlayer = useViewerStore((s) =>
+    selKey ? (s.curSnap?.players ?? []).find((p) => playerKey(p) === selKey) ?? null : null);
+  const selAlias = selPlayer?.eosId ?? null;
+  const selName = selPlayer?.name ?? null;
+  useEffect(() => {
+    if (!shouldNotifyParent(loc.kind, window)) return;
+    const msg = selKey == null ? playerSelectMessage(null)
+      : playerSelectMessage({ eosId: selAlias, name: selName });
+    if (msg) window.parent.postMessage(msg, window.location.origin);
+  }, [loc.kind, selKey, selAlias, selName]);
+
   const ended = feed.end.phase !== "hidden";
   return (
     <ViewerLayout
@@ -167,6 +193,7 @@ function LiveViewer({ loc }: { loc: ZzLiveLocation }) {
       topExtra={<LiveBadge conn={feed.conn} delaySec={feed.delaySec} admin={feed.admin} />}
       overlays={
         <>
+          {admin && <LiveAlertStrip items={alerts} onChange={setAlerts} />}
           <LiveStatusOverlay conn={feed.conn} hidden={ended} onRetry={feed.onRetry} />
           <LiveEndOverlay state={feed.end} admin={feed.admin} onNext={feed.onNext}
                           onGoto={feed.onGoto} onClose={feed.onClose} />
