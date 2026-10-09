@@ -27,7 +27,7 @@ kendi SQLite veritabanına istatistik yazar ve Zero Zone'un çektiği salt-okunu
 2. Ön koşullar
 3. Kaynaktan kurulum
 4. Kullanıcı, dizinler, izinler
-5. Token üretimi ve config
+5. Token üretimi ve config (5.3: oyun günlüğü / kill feed yolu)
 6. Unit kurulumu ve yalnız 7787'nin etkinleştirilmesi
 7. Asgari yetkiler, sertleştirme ve NELERİN yapılmadığı
 8. Doğrulama (`dogrula.sh`) ve geçici teşhis
@@ -222,7 +222,7 @@ sudo -u sqreader python3 -c "import json; json.load(open('/etc/sqreader/7787.con
 | `server_id` | `zz-7787` | Veri bölümleme anahtarı. Başka `server_id`'nin verisi olan dizinde okuyucu **başlamaz** (`discovery.check_stats_db_server_id`). |
 | `squad_port` / `squad_query_port` | `7787` / `null` | **Zero Zone kipinde (Export API açık) `squad_port`, `squad_query_port` ya da `expected_container_id`'den EN AZ BİRİ ZORUNLUDUR:** hiçbiri yoksa `serve` başlamayı reddeder (çıkış kodu 2, "hedef ölçütü yok"); reader 7788'e (henüz devredilmemiş sunucuya) "bulduğum tek süreç" diye bağlanmaz. `require_target` (`null` = Export API açıksa zorunlu; `true`/`false` zorlar) bunu değiştirir. Ayrıca unit'in `ExecStartPre=sqreader check-instance %i` adımı örnek adının (`sqreader@7787`) `squad_port` YA DA `squad_query_port` değerlerinden birine EŞİT olduğunu denetler (7787 `QueryPort` ise `squad_port: null` + `squad_query_port: 7787` geçerlidir); ikisi de yoksa ya da hiçbiri örnek adıyla eşleşmiyorsa servis başlamaz. Config dosyası VAR ama bozuksa (geçersiz JSON, okunamıyor) reader varsayılana dönmez, HATA verip çıkar (kod 2). 7787'nin oyunun `-Port=` mu `-QueryPort=` mu olduğu **DOĞRULANMADI**. `sudo ./dogrula.sh 7787` bölüm 3 bunu gösterir; `QueryPort` ise değerleri değiştirin. İkisi de doluysa ikisi de eşleşmeli. |
 | `expected_container_id` | `null` | İsteğe bağlı ek güvence; bölüm 11. |
-| `log_path_in_container` / `log_path` | `null` | Varsayılan konteyner içi log: `/home/container/SquadGame/Saved/Logs/SquadGame.log` (`sqreader/discovery.py`, `DEFAULT_LOG_PATH_IN_CONTAINER`). Farklıysa yazın. |
+| `log_path_in_container` / `log_path` | `null` | Oyun günlüğü (kill feed'in BİRİNCİL kaynağı). `null` iken konteyner içi varsayılan `/home/container/SquadGame/Saved/Logs/SquadGame.log` `/proc/<pid>/root` üzerinden denenir (`sqreader/discovery.py`, `DEFAULT_LOG_PATH_IN_CONTAINER`); Pterodactyl'de `sqreader` kullanıcısı burayı okuyamaz. **Pterodactyl'de `log_path`'e host hacim yolunu yazın:** `/var/lib/pterodactyl/volumes/<sunucu-uuid>/SquadGame/Saved/Logs/SquadGame.log`. Ayrıntı: 5.3. |
 | `net_policy` / `net_allow_hosts` | `"local-only"` / `[]` | Dış ağ politikası (`sqreader/netpolicy.py`). `local-only`: yalnız loopback, özel ağ ve `net_allow_hosts`'ta birebir yazılan adresler; `allow-central` upstream davranışını (enroll, push, güncelleme) açar ve açıkça seçilmelidir. Geçersiz değerde okuyucu HATA verip çıkar (çıkış kodu 2). `SQREADER_NET_POLICY` / `SQREADER_NET_ALLOW_HOSTS` ortam değişkenleri config'e üstündür (3.4). |
 | `update_enabled` / `offset_autoheal` | `false` / `false` | Bu çatalda kod varsayılanı da `false` (`sqreader/config.py`); upstream'de `true` idi. Örnek config açıkça `false` verir. |
 | `export_state_dir` | `null` | `export_state.json`, `export_audit.log`, `retention_state.json` yeri (`sqreader/export_state.py`: `STATE_FILE`, `AUDIT_FILE`, `RETENTION_STATE_FILE`); `null` = kayıt dizininin üst dizini (`/var/lib/sqreader/7787`). `retention --state-dir` bunu ezer. |
@@ -250,6 +250,35 @@ sudo chmod 0644 /etc/sqreader/7787.env
 ```
 
 7787 -> 8787 (7788 -> 8788). `.env.agent` **oluşturulmaz** (`sqreader enroll` çalıştırılmaz).
+
+### 5.3 Oyun günlüğü (kill feed) yolu
+
+Oyun günlüğü (`SquadGame.log`) kill feed'in **birincil** kaynağıdır: her ölümü saldırgan ve
+silahla yazar. Bellek örneklemesi yalnız zenginleştirir (mesafe, kafadan vuruş, vücut bölgesi).
+Günlük okunamazsa reader bellek olaylarına geri düşer; bu durumda ölümlerin bir kısmı kaçar
+(gözlem: yaklaşık %30, ÖLÇÜLMEDİ - kesin oran yok) ve saldırgan "?" görünür. Journal'da
+`UYARI: Squad logu bulunamadı: kill feed EKSİK olacak` satırı çıkar.
+
+Pterodactyl'de Squad sunucusu Docker konteynerindedir ve `sqreader` kullanıcısı
+`/proc/<pid>/root` altını (`cap_dac_read_search` + `cap_sys_ptrace` olsa bile) okuyamaz. Çözüm,
+host'taki hacim yolunu `log_path` olarak vermektir (dosya host'ta dünya-okunurdur):
+
+```bash
+ls /var/lib/pterodactyl/volumes/          # <sunucu-uuid> dizin adıdır (docker ps konteyner adı da aynıdır)
+sudoedit /etc/sqreader/7787.config.json
+#   "log_path": "/var/lib/pterodactyl/volumes/<sunucu-uuid>/SquadGame/Saved/Logs/SquadGame.log",
+sudo systemctl restart sqreader@7787
+```
+
+`<sunucu-uuid>` bir yer tutucudur; her sunucunun (7787, 7788) uuid'si FARKLIDIR. Gerçek uuid'yi
+depoya yazmayın. Açıldığını doğrulama:
+
+```bash
+journalctl -u sqreader@7787 | grep "kill-feed from log"
+```
+
+Bu satır yoksa günlük okunamıyordur (yol/izin); satırın biçimi ve kill feed doğruluğu bu
+belgeyi yazan tarafından gerçek sunucuda DOĞRULANMADI.
 
 ## 6. Unit kurulumu ve yalnız 7787'nin etkinleştirilmesi
 

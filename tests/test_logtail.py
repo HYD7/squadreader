@@ -1,8 +1,10 @@
 """Pure-logic tests for the Squad-log damage/wound/die correlation. No I/O,
 no live process — feeds real log-line shapes through DamageLogParser and
 checks the events it emits."""
+import time
+
 from sqreader.squad.logtail import (
-    DamageLogParser, _norm_weapon, find_squad_log, resolve_event_names,
+    DamageLogParser, LogTailer, _norm_weapon, find_squad_log, resolve_event_names,
 )
 
 TS = "[2026.07.12-18.31.24:082][892]"
@@ -280,3 +282,42 @@ def test_find_squad_log_returns_none_or_str():
     # Environment-dependent (no logs on the test box) — just must not raise.
     r = find_squad_log()
     assert r is None or isinstance(r, str)
+
+
+def _wait(cond, timeout=2.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
+
+
+def test_tailer_missing_path_unhealthy(tmp_path):
+    t = LogTailer(str(tmp_path / "nope.log"), poll_sec=0.05)
+    t.start()
+    try:
+        time.sleep(0.3)
+        assert t.healthy() is False
+    finally:
+        t.stop()
+
+
+def test_tailer_real_file_healthy_then_deleted_unhealthy(tmp_path):
+    p = tmp_path / "Squad.log"
+    p.write_text("hello\n")
+    t = LogTailer(str(p), poll_sec=0.05)
+    t.start()
+    try:
+        assert _wait(t.healthy)  # quiet log is still healthy
+        p.unlink()
+        assert _wait(lambda: not t.healthy())
+    finally:
+        t.stop()
+
+
+def test_emit_has_source_log():
+    p = DamageLogParser()
+    p.feed(wound("Vic"))
+    evs = p.drain()
+    assert evs and all(e["source"] == "log" for e in evs)

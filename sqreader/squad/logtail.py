@@ -295,6 +295,7 @@ class DamageLogParser:
             "wounded": wounded,
             "killed": killed,
             "ts": round(ts, 3),
+            "source": "log",
         })
 
     def drain(self) -> list[dict]:
@@ -323,6 +324,7 @@ class LogTailer:
         self._thread: Optional[threading.Thread] = None
         self.lines_read = 0
         self.last_error: Optional[str] = None
+        self._open_ok = False
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="squad-logtail",
@@ -331,6 +333,14 @@ class LogTailer:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def healthy(self) -> bool:
+        """Thread alive, log opened fine and still present. A quiet log (no
+        new lines) is NOT unhealthy."""
+        import os
+        t = self._thread
+        return bool(t is not None and t.is_alive() and self._open_ok
+                    and os.path.exists(self.path))
 
     def drain(self) -> list[dict]:
         with self._lock:
@@ -341,12 +351,14 @@ class LogTailer:
             try:
                 self._follow()
             except Exception as e:  # never let the tailer crash the reader
+                self._open_ok = False
                 self.last_error = f"{type(e).__name__}: {e}"
                 time.sleep(2.0)
 
     def _follow(self) -> None:
         import os
         f = open(self.path, encoding="utf-8", errors="replace")
+        self._open_ok = True
         try:
             # Initial catch-up: replay the log's tail to rebuild the
             # correlation state (a player downed just before we started can
@@ -386,6 +398,7 @@ class LogTailer:
                     if st.st_ino != cur_ino or st.st_size < f.tell():
                         f.close()
                         f = open(self.path, encoding="utf-8", errors="replace")
+                        self._open_ok = True
                         cur_ino = os.fstat(f.fileno()).st_ino
                         buf = ""
                         continue

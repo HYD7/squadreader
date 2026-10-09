@@ -43,6 +43,14 @@
     "surece BAGLANMAZ (KURULUM-TR.md bolum 11)."
   ],
   "expected_container_id": null,
+  "_log_comment": [
+    "log_path: Squad oyun gunlugu (SquadGame.log) = kill feed'in BIRINCIL kaynagi. Pterodactyl (Docker)",
+    "kurulumunda /proc/<pid>/root altindan okunamaz; HOST'taki hacim yolunu verin:",
+    "  /var/lib/pterodactyl/volumes/<sunucu-uuid>/SquadGame/Saved/Logs/SquadGame.log",
+    "<sunucu-uuid> placeholder'dir (bu sunucunun GERCEK uuid'si: `ls /var/lib/pterodactyl/volumes/`",
+    "ya da `docker ps` konteyner adi). Gunluk okunamazsa reader bellek olaylarina geri duser.",
+    "Deger ornekte null kalir; uuid'yi kurulumda /etc/sqreader/7788.config.json'a yazin."
+  ],
   "log_path_in_container": null,
   "log_path": null,
 
