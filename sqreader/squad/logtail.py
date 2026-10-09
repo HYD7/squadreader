@@ -54,6 +54,11 @@ _REVIVE_RE = re.compile(r"has revived (?P<victim>.+?) \(Online IDs:")
 _TS_RE = re.compile(r"^\[(?P<ts>[\d.]+-[\d.]+:[\d]+)\]")
 
 
+_POSSESS_RE = re.compile(
+    r"On(?:Un)?Possess\(\): PC=(?P<name>.+?)\s*\(Online IDs:\s*EOS:\s*(?P<eos>[0-9a-fA-F]{32})")
+_LOGIN_EOS_RE = re.compile(r"PostLogin: NewPlayer:.*Online IDs:\s*EOS:\s*([0-9a-fA-F]{32})")
+
+
 def resolve_event_names(events: list[dict], players: list[dict]) -> list[dict]:
     """Rewrite each event's attacker/victim to the matching snapshot player's
     base name.
@@ -197,6 +202,26 @@ class DamageLogParser:
         self._wounded_by: dict[str, tuple] = {}
         self._events: deque = deque(maxlen=max_buffer)
         self._last_ts: float = 0.0
+        # EOS -> player name learned from the log itself (SquadReader's
+        # roster eosId is not the real EOS). Insertion-ordered; oldest
+        # dropped past EOS_MAP_MAX. Deliberately NOT cleared on map load.
+        self.eos_to_name: dict[str, str] = {}
+        self._login_eos: Optional[tuple] = None   # (eos, ts) from PostLogin
+
+    EOS_MAP_MAX = 4096
+
+    def _learn(self, eos: Optional[str], name: Optional[str]) -> None:
+        if not eos or not name or eos == "INVALID":
+            return
+        name = name.strip()
+        if not name:
+            return
+        d = self.eos_to_name
+        if eos in d:
+            del d[eos]            # re-insert => most recently seen last
+        d[eos] = name
+        while len(d) > self.EOS_MAP_MAX:
+            del d[next(iter(d))]
 
     def _gc(self, now: float) -> None:
         self._last_gc = now
@@ -208,6 +233,21 @@ class DamageLogParser:
     def feed(self, line: str) -> None:
         ts = _parse_ts(line) or self._last_ts
         self._last_ts = ts
+
+        if "OnPossess(): PC=" in line or "OnUnPossess(): PC=" in line:
+            m = _POSSESS_RE.search(line)
+            if m:
+                self._learn(m.group("eos"), m.group("name"))
+            return
+        if "PostLogin: NewPlayer" in line:
+            m = _LOGIN_EOS_RE.search(line)
+            self._login_eos = (m.group(1), ts) if m else None
+            return
+        if "Join succeeded: " in line:
+            le, self._login_eos = self._login_eos, None
+            if le and ts - le[1] <= 2.0:
+                self._learn(le[0], line.split("Join succeeded: ", 1)[1])
+            return
 
         if "LogWorld: Bringing World" in line:
             # New map/match: nothing remembered from the last one may leak in
@@ -221,6 +261,8 @@ class DamageLogParser:
         if m:
             victim = m.group("victim").strip()
             attacker = m.group("attacker").strip()
+            if attacker != "nullptr":
+                self._learn(m.group("eos"), attacker)
             self._pending[victim] = (
                 attacker, m.group("eos"), _norm_weapon(m.group("weapon")), ts)
             if ts - self._last_gc > 60.0:   # bound memory on long kill-less spells
@@ -350,6 +392,10 @@ class DamageLogParser:
 
     def _emit(self, victim, attacker, eos, weapon, ts, *, wounded, killed,
               self_inflicted=None, damage_type=None, killer_eos=None):
+        if attacker is None:
+            known = self.eos_to_name.get(eos or "") or self.eos_to_name.get(killer_eos or "")
+            if known:
+                attacker = known
         self._events.append({
             "victim": victim,
             "victimEosId": None,          # log gives the attacker's EOS, not victim's

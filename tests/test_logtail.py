@@ -437,3 +437,83 @@ def test_wound_record_ttl_checked_on_read_without_gc():
     p.feed(die("Vic", caused="nullptr").replace("18.31.24", "19.01.00"))
     k = only(p.drain(), killed=True)[0]
     assert k["attacker"] is None and k["attackerEosId"] is None
+
+
+# --- EOS -> name learned from the log itself --------------------------------
+
+E1 = "0002" + "a" * 28
+E2 = "0002" + "b" * 28
+
+
+def possess(name, eos, kind="OnPossess"):
+    return (f"{TS}LogSquadTrace: [DedicatedServer]{kind}(): PC={name} "
+            f"(Online IDs: EOS: {eos} epic: {'f' * 32} steam: 1) Pawn=X")
+
+
+def _nullptr_hit(victim):
+    return (f"{TS}LogSquad: Player: {victim} ActualDamage=80.0 from nullptr "
+            f"(Online IDs: INVALID | Player Controller ID: None)caused by BP_BTR_C_5")
+
+
+def test_possess_teaches_name_for_nullptr_wound_without_roster():
+    p = DamageLogParser()
+    p.feed(possess("『ZZ』Gunner", E1))
+    p.feed(_nullptr_hit("Vic"))
+    p.feed(_wound_full("Vic", E1, "BP_BTR_C_1"))
+    w = only(p.drain(), wounded=True)[0]
+    assert w["attacker"] == "『ZZ』Gunner" and w["attackerEosId"] == E1
+
+
+def test_unpossess_also_teaches_and_name_change_updates():
+    p = DamageLogParser()
+    p.feed(possess("Old", E1, "OnUnPossess"))
+    assert p.eos_to_name[E1] == "Old"
+    p.feed(possess("New", E1))
+    assert p.eos_to_name[E1] == "New"
+    p.feed(_nullptr_hit("Vic"))
+    p.feed(_wound_full("Vic", E1, "BP_BTR_C_1"))
+    assert only(p.drain(), wounded=True)[0]["attacker"] == "New"
+
+
+def test_actualdamage_teaches_and_map_load_keeps_map():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "Shooter", E2, "BP_AK_C_1"))
+    p.feed(f"{TS}LogWorld: Bringing World /Game/Maps/X")
+    assert p.eos_to_name[E2] == "Shooter"
+
+
+def test_postlogin_join_pair_teaches():
+    p = DamageLogParser()
+    p.feed(f"{TS}LogSquad: PostLogin: NewPlayer: BP_PlayerController_C /x.y "
+           f"(IP: 1.2.3.4 | Online IDs: EOS: {E1} steam: 1)")
+    p.feed(f"{TS}LogNet: Join succeeded: Joiner")
+    assert p.eos_to_name[E1] == "Joiner"
+
+
+def test_self_wound_with_known_eos_stays_self_inflicted():
+    p = DamageLogParser()
+    p.feed(possess("Vic", E1))
+    p.feed(_wound_full("Vic", E1, "BP_X_C_1"))
+    w = only(p.drain(), wounded=True)[0]
+    assert w["attacker"] is None and w["selfInflicted"] is True
+
+
+def test_eos_map_capped_at_4096_dropping_oldest():
+    p = DamageLogParser()
+    for i in range(4100):
+        p.feed(possess(f"P{i}", f"{i:032x}"))
+    assert len(p.eos_to_name) == 4096
+    assert f"{0:032x}" not in p.eos_to_name and f"{4099:032x}" in p.eos_to_name
+
+
+def test_tailer_catchup_learns_names_but_drops_events(tmp_path):
+    f = tmp_path / "Squad.log"
+    f.write_text(possess("Gunner", E1) + "\n" + _wound_full("V", E2, "BP_X_C_1") + "\n")
+    t = LogTailer(str(f), poll_sec=0.05)
+    t.start()
+    try:
+        assert _wait(t.healthy)
+        assert _wait(lambda: t.parser.eos_to_name.get(E1) == "Gunner")
+        assert t.drain() == []
+    finally:
+        t.stop()
