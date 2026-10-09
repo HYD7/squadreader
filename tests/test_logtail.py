@@ -16,7 +16,7 @@ def actual(victim, attacker, eos, weapon, dmg="50.0"):
             f"Player Controller ID: BP_PlayerController_C_1)caused by {weapon}")
 
 
-def wound(victim, ctrl="BP_PlayerController_C_1", eos="000200"):
+def wound(victim, ctrl="BP_PlayerController_C_1", eos="0002ab"):
     return (f"{TS}LogSquadTrace: [DedicatedServer]Wound(): Player: {victim} "
             f"KillingDamage=50.0 from {ctrl} (Online IDs: EOS: {eos} steam: 1)")
 
@@ -114,7 +114,7 @@ def test_revive_then_fresh_incap_credits_the_new_attacker():
     p.feed(revive("Medic", "PlayerA"))
     p.drain()
     p.feed(actual("PlayerA", "KillerC", "0002cd", "BP_M4_C_1"))
-    p.feed(wound("PlayerA"))                  # fresh incap by C
+    p.feed(wound("PlayerA", eos="0002cd"))                  # fresh incap by C
     p.feed(die("PlayerA", ctrl="nullptr"))    # bleeds out from C's incap
     k = only(p.drain(), killed=True)
     assert len(k) == 1
@@ -219,7 +219,7 @@ def test_die_eos_unknown_killer_left_unattributed():
 def test_names_with_spaces_and_unicode():
     p = DamageLogParser()
     p.feed(actual("[ TŞK ] Hannibal", "「Ns」 Alexa", "0002cd", "BP_M4_C_1"))
-    p.feed(wound("[ TŞK ] Hannibal"))
+    p.feed(wound("[ TŞK ] Hannibal", eos="0002cd"))
     w = only(p.drain(), wounded=True)
     assert len(w) == 1
     assert w[0]["victim"] == "[ TŞK ] Hannibal"
@@ -378,3 +378,62 @@ def test_unrecorded_nullptr_die_keeps_caused_by_weapon():
     k = only(p.drain(), killed=True)[0]
     assert k["attacker"] is None
     assert k["causerWeapon"] == "BP_TAPV_C"
+
+
+def test_vehicle_die_ignores_stale_wound_record():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "OldKiller", "0001old", "BP_Rifle_C"))
+    p.feed(wound("Vic", eos="0001old"))
+    p.drain()
+    p.feed(die("Vic", caused="BP_TAPV_C_5"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] is None and k["attackerEosId"] is None
+    assert k["causerWeapon"] == "BP_TAPV_C"
+    assert k["damageType"] == "BP_TAPV_C"
+
+
+def test_bleed_die_with_soldier_causer_uses_wound_record():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "Killer", "0001kil", "BP_Rifle_C"))
+    p.feed(wound("Vic", eos="0001kil"))
+    p.feed(die("Vic", caused="BP_Soldier_ADF_Rifleman2_C_9"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] == "Killer"
+
+
+def test_bringing_world_clears_records():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "Killer", "0001kil", "BP_Rifle_C"))
+    p.feed(wound("Vic", eos="0001kil"))
+    p.feed(f"{TS}LogWorld: Bringing World /Maps/X.X up for play (max tick rate 50)")
+    p.drain()
+    p.feed(die("Vic", caused="nullptr"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] is None and k["attackerEosId"] is None
+
+
+def test_wound_eos_overrides_mismatching_remembered_hit():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "Other", "0001oth", "BP_Rifle_C"))
+    p.feed(_wound_full("Vic", "0002gun", "BP_TAPV_C_1"))
+    w = only(p.drain(), wounded=True)[0]
+    assert w["attacker"] is None and w["attackerEosId"] == "0002gun"
+    assert w["causerWeapon"] == "BP_TAPV_C"
+
+
+def test_instant_die_eos_overrides_mismatching_pending():
+    p = DamageLogParser()
+    p.feed(actual("Vic", "Other", "0001oth", "BP_Rifle_C"))
+    p.feed(die("Vic", ctrl="BP_PC_C_3", eos="0002gun", caused="BP_TAPV_C_1"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] is None and k["attackerEosId"] == "0002gun"
+    assert k["causerWeapon"] == "BP_TAPV_C"
+
+
+def test_wound_record_ttl_checked_on_read_without_gc():
+    p = DamageLogParser()
+    p.feed(_wound_full("Vic", "0002gun", "BP_TAPV_C_1"))
+    p.drain()
+    p.feed(die("Vic", caused="nullptr").replace("18.31.24", "19.01.00"))
+    k = only(p.drain(), killed=True)[0]
+    assert k["attacker"] is None and k["attackerEosId"] is None

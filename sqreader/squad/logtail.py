@@ -209,6 +209,14 @@ class DamageLogParser:
         ts = _parse_ts(line) or self._last_ts
         self._last_ts = ts
 
+        if "Bringing World" in line:
+            # New map/match: nothing remembered from the last one may leak in
+            # (round-end deaths arrive AFTER WaitingPostMatch, so that state
+            # change is deliberately not a reset point).
+            self._pending.clear()
+            self._wounded_by.clear()
+            return
+
         m = _ACTUAL_RE.search(line)
         if m:
             victim = m.group("victim").strip()
@@ -240,7 +248,13 @@ class DamageLogParser:
             # weapon even when the preceding ActualDamage was `from nullptr`
             # (vehicle weapon / collision). It is authoritative for the EOS.
             w_eos = self._valid_eos(m.group("from"), m.group("from_eos"))
-            if w_eos and not eos:
+            if w_eos and eos and w_eos != eos:
+                # The remembered hit belongs to someone else; the Wound line
+                # is authoritative. Names come from the roster via the EOS.
+                eos = w_eos
+                attacker = None
+                weapon = self._line_weapon(m.group("causer"))
+            elif w_eos and not eos:
                 eos = w_eos
             if not weapon:
                 weapon = self._line_weapon(m.group("causer"))
@@ -257,19 +271,27 @@ class DamageLogParser:
             victim = m.group("victim").strip()
             frm = m.group("from")
             causer = m.group("causer")
+            die_eos = m.group("from_eos")
             if frm and frm != "nullptr":
                 # instant kill — attacker is the last hit's source
                 src = self._fresh_hit(victim, ts)
-            else:
+            elif not causer or causer == "nullptr" or causer.startswith("BP_Soldier"):
                 # bleed-out / give-up — attacker is whoever downed them
                 src = self._wounded_by.get(victim)
+                if src and ts - src[3] > self.ttl:
+                    src = None
+            else:
+                src = None   # vehicle / world cause: a new death, not a bleed-out
             attacker = src[0] if src else None
             eos = src[1] if src else None
             weapon = src[2] if src else None
-            die_eos = m.group("from_eos")
+            if src and frm and frm != "nullptr" and die_eos and die_eos != "INVALID" \
+                    and eos and die_eos != eos:
+                # the Die line credits a different controller than the
+                # remembered hit: the line is authoritative
+                attacker, eos, weapon = None, die_eos, None
             if not weapon:
                 weapon = self._line_weapon(causer)
-            die_eos = m.group("from_eos")
             # The Die line names the CREDITED killer by controller EOS (the same
             # EOS the game scores the kill to). Keep it: when the name-cache has
             # expired — a death long after the wound, e.g. round-end deaths of
