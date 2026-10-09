@@ -1071,6 +1071,11 @@ html, body, #root {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
+.kf-row .kf-src {
+  font-size: 9px;
+  opacity: 0.55;
+  font-style: italic;
+}
 .kf-row .kf-hs {
   background: var(--bad);
   color: #fff;

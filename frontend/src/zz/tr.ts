@@ -102,6 +102,10 @@ export const TR_DICT = {
   "kf.approx":
     "yaklaşık: bu oyuncunun son görülen silahı, öldüren silah olmayabilir",
   "kf.headshot": "Kafadan vuruş",
+  "kf.src.log": "günlük",
+  "kf.src.memory": "bellek",
+  "kf.src.both": "günlük+bellek",
+  "kf.src.title": "Olay kaynağı",
   "kf.hs": "HS",
   "kf.dist": "{n} m",
   "kf.phrase.died": "öldü",

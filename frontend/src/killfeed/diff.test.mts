@@ -312,5 +312,25 @@ function evt(o: any): any {
   eq(deathCausePhrase("BP_Kinetic_DamageType_C"), "died", "real damage types unaffected (phrase)");
 }
 
+// Event source badge field is carried through; absent stays undefined.
+{
+  for (const src of ["log", "memory", "log+memory"]) {
+    const s = createDiffState();
+    diffSnapshot(s, snap([P("A","a",1,0,0), P("B","b",2,0,0)]));
+    const r = diffSnapshot(s, snap(
+      [P("A","a",1,1,0), P("B","b",2,0,1)],
+      [evt({ killed: true, attacker: "A", victim: "B", victimEosId: "b", victimTeam: 2, source: src, hitDistanceSource: "positions" })],
+    ));
+    eq(r.newEntries[0]?.source, src, `source ${src} carried`);
+  }
+  const s = createDiffState();
+  diffSnapshot(s, snap([P("A","a",1,0,0), P("B","b",2,0,0)]));
+  const r = diffSnapshot(s, snap(
+    [P("A","a",1,1,0), P("B","b",2,0,1)],
+    [evt({ killed: true, attacker: "A", victim: "B", victimEosId: "b", victimTeam: 2 })],
+  ));
+  eq(r.newEntries[0]?.source, undefined, "no source field -> undefined");
+}
+
 console.log(`\nkillfeed diff tests: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

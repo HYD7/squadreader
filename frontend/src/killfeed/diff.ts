@@ -18,7 +18,7 @@
 // render time would erase the vehicle association.
 
 import type {
-  DamageEvent, KillFeedEntry, Player, Snapshot, Vehicle,
+  DamageEvent, EventSource, KillFeedEntry, Player, Snapshot, Vehicle,
 } from "../state/types";
 
 // How long an attack event (wounded/killed, with an attacker) stays available
@@ -188,6 +188,7 @@ interface ResolvedWeapon {
   hitDistance: number | null;
   headshot: boolean;
   damageType: string | null;
+  source?: EventSource;
 }
 
 function resolveWeapon(
@@ -213,6 +214,7 @@ function resolveWeapon(
       if (ev.hitDistance != null && ev.hitDistance > 0)
         out.hitDistance = ev.hitDistance;
       if (ev.headshot) out.headshot = true;
+      if (ev.source && !out.source) out.source = ev.source;
       if (out.weaponClass) break;
     }
     // Tier 2 sweep: same killer, any victim — catches sibling-event cases
@@ -397,6 +399,7 @@ export function diffSnapshot(
         weaponApprox: w.weaponApprox,
         damageType: w.damageType ?? ev.damageType ?? null,
         hitDistance: w.hitDistance,
+        source: w.source,
         headshot: w.headshot,
         victim: vname,
         victimTeam: vTeam,

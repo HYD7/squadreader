@@ -14,10 +14,17 @@ import { playerKey } from "./PlayerPanel";
 import {
   damageTypeCategoryLabel, deathCauseFromDamageType, deathCausePhrase,
 } from "../killfeed/diff";
-import type { KillFeedEntry } from "../state/types";
+import type { EventSource, KillFeedEntry } from "../state/types";
 import { IS_ZZ } from "../zz/build";
 import { L, LEn } from "../zz/l";
 import { t } from "../zz/tr";
+
+const SRC_KEY: Record<EventSource, "kf.src.log" | "kf.src.memory" | "kf.src.both"> = {
+  "log": "kf.src.log", "memory": "kf.src.memory", "log+memory": "kf.src.both",
+};
+const SRC_EN: Record<EventSource, string> = {
+  "log": "log", "memory": "memory", "log+memory": "log+memory",
+};
 
 function fmtGameTime(s: number | null) {
   if (s == null || !Number.isFinite(s) || s < 0) return "00:00";
@@ -121,6 +128,10 @@ function Row({ e, select }: RowProps) {
           <span className="kf-dist">{IS_ZZ
             ? t("kf.dist", { n: Math.round(e.hitDistance) })
             : `${Math.round(e.hitDistance)} m`}</span>
+        )}
+        {e.source && (
+          <span className="kf-src" title={L("kf.src.title", "Event source")}>
+            {L(SRC_KEY[e.source], SRC_EN[e.source])}</span>
         )}
         {e.headshot && <span className="kf-hs" title={L("kf.headshot", "Headshot")}>
           {L("kf.hs", "HS")}</span>}

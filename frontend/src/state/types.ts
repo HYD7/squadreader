@@ -360,11 +360,15 @@ export interface DamageEvent {
   causerClass?: string | null;        // raw causer actor class (projectile, vehicle, soldier)
   damageType?: string | null;         // UDamageType class FName
   hitDistance?: number | null;        // meters (FHitResult.Distance/100)
+  hitDistanceSource?: "positions";    // how hitDistance was derived
+  source?: EventSource;               // event origin (absent on old replays)
   headshot?: boolean | null;          // FHitResult.BoneName === "head"
   wounded?: boolean | null;           // incap (not yet fatal)
   killed?: boolean | null;            // final death (bleed-out or instant)
   ts?: number | null;                 // event tick id (for dedupe)
 }
+
+export type EventSource = "log" | "memory" | "log+memory";
 
 // One row in the kill feed. Derived view computed from tick-over-tick
 // diffs of player.stats.kills/deaths, paired with damageEvents for
@@ -384,6 +388,7 @@ export interface KillFeedEntry {
                                           // last-seen cache — may be wrong
   damageType: string | null;
   hitDistance: number | null;
+  source?: EventSource;                   // damageEvent origin badge
   headshot: boolean;
   victim: string;
   victimTeam: number | null;
