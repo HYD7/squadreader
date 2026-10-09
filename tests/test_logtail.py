@@ -490,6 +490,56 @@ def test_postlogin_join_pair_teaches():
     assert p.eos_to_name[E1] == "Joiner"
 
 
+def _login(eos, chain, ms):
+    return (f"[2026.07.12-18.31.24:{ms:03d}][{chain}]LogSquad: PostLogin: NewPlayer: "
+            f"BP_PlayerController_C /x.y (IP: 1.2.3.4 | Online IDs: EOS: {eos} steam: 1)")
+
+
+def _join(name, chain, ms):
+    return f"[2026.07.12-18.31.24:{ms:03d}][{chain}]LogNet: Join succeeded: {name}"
+
+
+def test_nested_logins_matched_by_chain():
+    p = DamageLogParser()
+    p.feed(_login(E1, " 42", 100))
+    p.feed(_login(E2, "  7", 110))
+    p.feed(_join("Alice", " 42", 120))
+    p.feed(_join("Bob", "  7", 130))
+    assert p.eos_to_name[E1] == "Alice" and p.eos_to_name[E2] == "Bob"
+
+
+def test_nested_logins_chain_mismatch_order():
+    p = DamageLogParser()
+    p.feed(_login(E1, " 42", 100))
+    p.feed(_login(E2, "  7", 110))
+    p.feed(_join("Bob", "  7", 120))
+    p.feed(_join("Alice", " 42", 130))
+    assert p.eos_to_name[E1] == "Alice" and p.eos_to_name[E2] == "Bob"
+
+
+def test_login_join_without_chain_uses_fifo():
+    p = DamageLogParser()
+    p.feed(f"{TS}LogSquad: PostLogin: NewPlayer: X (IP: 1 | Online IDs: EOS: {E1} steam: 1)")
+    p.feed(f"{TS}LogSquad: PostLogin: NewPlayer: X (IP: 1 | Online IDs: EOS: {E2} steam: 1)")
+    p.feed("LogNet: Join succeeded: Alice")
+    p.feed("LogNet: Join succeeded: Bob")
+    assert p.eos_to_name[E1] == "Alice" and p.eos_to_name[E2] == "Bob"
+
+
+def test_stale_login_not_matched():
+    p = DamageLogParser()
+    p.feed(_login(E1, " 42", 100))
+    p.feed("[2026.07.12-18.31.30:000][ 42]LogNet: Join succeeded: Late")
+    assert E1 not in p.eos_to_name
+
+
+def test_self_inflicted_skips_name_fill():
+    p = DamageLogParser()
+    p._learn(E1, "Known")
+    p._emit("Vic", None, E1, "w", 1.0, wounded=False, killed=True, self_inflicted=True)
+    assert p.drain()[0]["attacker"] is None
+
+
 def test_self_wound_with_known_eos_stays_self_inflicted():
     p = DamageLogParser()
     p.feed(possess("Vic", E1))

@@ -178,6 +178,15 @@ def _parse_ts(line: str) -> Optional[float]:
         return None
 
 
+_CHAIN_RE = re.compile(r"^\[[^\]]*\]\[\s*(\d+)\]")
+
+
+def _chain_id(line: str) -> Optional[str]:
+    """Chain id from the `[timestamp][ chain]` line header, if present."""
+    m = _CHAIN_RE.match(line)
+    return m.group(1) if m else None
+
+
 def _norm_weapon(w: str) -> str:
     # BP_M4_SimonOffense_T800_C_2007009837 -> BP_M4_SimonOffense_T800_C
     # (strip the trailing runtime instance id so it matches the catalog)
@@ -206,9 +215,11 @@ class DamageLogParser:
         # roster eosId is not the real EOS). Insertion-ordered; oldest
         # dropped past EOS_MAP_MAX. Deliberately NOT cleared on map load.
         self.eos_to_name: dict[str, str] = {}
-        self._login_eos: Optional[tuple] = None   # (eos, ts) from PostLogin
+        # PostLogin entries awaiting their "Join succeeded": (chain, eos, ts)
+        self._pending_login: deque = deque(maxlen=16)
 
     EOS_MAP_MAX = 4096
+    LOGIN_JOIN_SEC = 2.0
 
     def _learn(self, eos: Optional[str], name: Optional[str]) -> None:
         if not eos or not name or eos == "INVALID":
@@ -241,12 +252,22 @@ class DamageLogParser:
             return
         if "PostLogin: NewPlayer" in line:
             m = _LOGIN_EOS_RE.search(line)
-            self._login_eos = (m.group(1), ts) if m else None
+            if m:
+                self._pending_login.append((_chain_id(line), m.group(1), ts))
             return
         if "Join succeeded: " in line:
-            le, self._login_eos = self._login_eos, None
-            if le and ts - le[1] <= 2.0:
-                self._learn(le[0], line.split("Join succeeded: ", 1)[1])
+            pl = self._pending_login
+            while pl and ts - pl[0][2] > self.LOGIN_JOIN_SEC:
+                pl.popleft()                      # stale: never got its Join
+            chain = _chain_id(line)
+            hit = None
+            if chain is not None:
+                hit = next((e for e in pl if e[0] == chain), None)
+            if hit is None and pl:
+                hit = pl[0]                       # no/unknown chain: FIFO
+            if hit is not None:
+                pl.remove(hit)
+                self._learn(hit[1], line.split("Join succeeded: ", 1)[1])
             return
 
         if "LogWorld: Bringing World" in line:
@@ -392,7 +413,7 @@ class DamageLogParser:
 
     def _emit(self, victim, attacker, eos, weapon, ts, *, wounded, killed,
               self_inflicted=None, damage_type=None, killer_eos=None):
-        if attacker is None:
+        if attacker is None and not self_inflicted:
             known = self.eos_to_name.get(eos or "") or self.eos_to_name.get(killer_eos or "")
             if known:
                 attacker = known
