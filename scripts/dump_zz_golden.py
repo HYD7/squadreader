@@ -101,8 +101,10 @@ def _golden_for_server(fx_root: Path, server_id: str, out: Path) -> list[str]:
                 lines = ndjson.count(b"\n")
                 assert str(lines) == hdrs["X-Sqr-Total-Frames"], (rec["id"], lines)
                 gz_name = f"recording-{rec['id']}.ndjson.gz"
-                (out / gz_name).write_bytes(
+                gz = bytearray(
                     gzip.compress(ndjson, compresslevel=GZIP_LEVEL, mtime=0))
+                gz[9] = 0x0a    # pin the gzip OS byte: it varies with the Python version
+                (out / gz_name).write_bytes(bytes(gz))
                 kept = {k: hdrs[k] for k in _KEPT_HEADERS}
                 kept["Content-Encoding"] = "gzip"     # of the stored .gz file
                 _dump_json(out / f"recording-{rec['id']}.headers.json",

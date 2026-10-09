@@ -2580,16 +2580,16 @@ def read_take_hit_info(pm: ProcessMemory, alloc: FNameEntryAllocator,
         out["ejectedFromVehicle"] = bool(flags & 0x04)
 
     # HitResult.Distance + BoneName from the embedded PointDamageEvent.
-    # Only point-damage events (bullets, grenades, melee) populate this;
-    # radial / fall / drown / collision damage leaves Distance=0 and
-    # BoneName='None', which we filter out below.
+    # Distance is NOT the shooter-victim distance: it is the length of a
+    # short server trace (~Time*1000 cm, mostly 1-75 cm). Publishing it as
+    # hitDistance gave bogus 1-10 m values, so it is kept raw as
+    # hitTraceCm only; real distance comes from positions (killmerge).
     hit_base = base + THI_POINT_DAMAGE_EVENT_OFFSET + PDE_HIT_INFO_OFFSET
     dist_b = pm.try_read(hit_base + HR_DISTANCE_OFFSET, 4)
     if dist_b and len(dist_b) == 4:
-        dist_cm = struct.unpack("<f", dist_b)[0]
-        # Squad units are cm; killfeed wants meters. 1m..10km sanity.
-        if 100 <= dist_cm < 1_000_000:
-            out["hitDistance"] = dist_cm / 100.0
+        trace_cm = struct.unpack("<f", dist_b)[0]
+        if 0 < trace_cm < 1_000_000:
+            out["hitTraceCm"] = float(trace_cm)
     bone = _read_fname(pm, hit_base + HR_BONE_NAME_OFFSET, alloc)
     if bone and bone.lower() not in ("none", ""):
         out["bone"] = bone
@@ -3980,6 +3980,7 @@ def build_snapshot(pm: ProcessMemory, arr: GUObjectArray,
                 ev["causerClass"]  = thi.get("causerClass")
                 ev["causerWeapon"] = thi.get("causerWeapon")
                 ev["hitDistance"]  = thi.get("hitDistance")
+                ev["hitTraceCm"]   = thi.get("hitTraceCm")
                 ev["headshot"]     = thi.get("headshot", False)
                 ev["killed"]       = thi.get("killed", False)
                 ev["wounded"]      = thi.get("wounded", False)

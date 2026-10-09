@@ -55,9 +55,22 @@ def _find_player(players, eos, name):
 
 def _fill_distance(ev: dict, players: list) -> None:
     """Fill hitDistance (m) from roster positions: the memory FHitResult
-    distance is a short trace length, not shooter-victim distance."""
-    if ev.get("hitDistance") is not None or ev.get("selfInflicted"):
+    distance is a short trace length, not shooter-victim distance.
+
+    Only a value with hitDistanceSource == "positions" is kept; anything
+    else is recomputed, or reset to None if it cannot be computed.
+    Note: for log+memory events victimPos comes from the memory event's
+    tick (hit moment) and the attacker position from the current tick, so
+    there is ~1-2 s skew and the result is approximate."""
+    if ev.get("hitDistanceSource") == "positions":
         return
+    if ev.get("selfInflicted"):
+        return
+    ev["hitDistance"] = None
+    _compute_distance(ev, players)
+
+
+def _compute_distance(ev: dict, players: list) -> None:
     att = _norm(ev.get("attacker"))
     if not att:
         return

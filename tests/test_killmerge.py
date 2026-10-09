@@ -40,7 +40,7 @@ def test_same_tick_merge():
     assert e["victimEosId"] == "E-BOB" and e["victimTeam"] == 2
     assert e["victimPos"] == [1, 2, 3] and e["bone"] == "head"
     assert e["damage"] == 100.0 and e["headshot"] is True
-    assert e["hitDistance"] == 42.0 and e["causerClass"] == "BP_Rifle_C"
+    assert e["hitDistance"] is None and e["causerClass"] == "BP_Rifle_C"
     assert e["attackerEosId"] == "E-AL" and e["causerWeapon"] == "Rifle"
     assert e["attackerCtrlAddr"] == 99
 
@@ -170,9 +170,20 @@ def test_distance_attacker_not_in_roster():
     assert e["hitDistance"] is None and "hitDistanceSource" not in e
 
 
-def test_distance_not_overwritten():
-    e = _dist_run(_roster(), log_ev(), mem_ev(hitDistance=42.0))
-    assert e["hitDistance"] == 42.0 and "hitDistanceSource" not in e
+def test_distance_positions_value_kept():
+    e = _dist_run(_roster(), log_ev(hitDistance=7.0,
+                                    hitDistanceSource="positions"))
+    assert e["hitDistance"] == 7.0 and e["hitDistanceSource"] == "positions"
+
+
+def test_distance_sourceless_value_recomputed():
+    e = _dist_run(_roster(), log_ev(), mem_ev(hitDistance=3.0, victimPos=None))
+    assert e["hitDistance"] == 300.0 and e["hitDistanceSource"] == "positions"
+
+
+def test_distance_sourceless_value_cleared_without_positions():
+    e = _dist_run(_roster(att=False), log_ev(), mem_ev(hitDistance=3.0))
+    assert e["hitDistance"] is None and "hitDistanceSource" not in e
 
 
 def test_distance_ambiguous_attacker_name():
